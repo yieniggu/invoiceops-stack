@@ -296,6 +296,70 @@ class Runtime:
 
 
 class SmokeTests(unittest.TestCase):
+    def test_shutdown_uses_cleanup_reserve_before_at_and_after_1680(self):
+        for elapsed in (1679, 1680, 1690):
+            with self.subTest(elapsed=elapsed):
+                runtime = Runtime()
+                clock = [0.0]
+                with patch.object(smoke.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(smoke.subprocess, "run", side_effect=runtime):
+                    harness = self.harness()
+                    harness.execute()
+                    clock[0] = elapsed
+                    runtime.calls.clear()
+                    harness.shutdown()
+                self.assertEqual(harness.report["shutdown"], "PASS_VOLUMES_IMAGES_PRESERVED")
+                self.assertTrue(any("down" in argv for argv, _ in runtime.calls))
+                self.assertEqual(harness.deadline, 1800)
+                for _, kwargs in runtime.calls:
+                    self.assertLessEqual(kwargs["timeout"], 1800 - elapsed)
+
+    def test_shutdown_post_down_checks_use_remaining_total_budget(self):
+        runtime = Runtime()
+        actual = runtime.__call__
+        clock, observed = [0.0], []
+
+        def boundary(argv, **kwargs):
+            if "down" in argv:
+                clock[0] = 1795
+            elif clock[0] >= 1795:
+                observed.append(kwargs["timeout"])
+            return actual(argv, **kwargs)
+        with patch.object(smoke.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(smoke.subprocess, "run", side_effect=boundary):
+            harness = self.harness()
+            harness.execute()
+            clock[0] = 1780
+            harness.shutdown()
+        self.assertEqual(harness.report["shutdown"], "PASS_VOLUMES_IMAGES_PRESERVED")
+        self.assertGreater(len(observed), 0)
+        self.assertEqual(set(observed), {5})
+
+    def test_shutdown_stops_dispatch_at_absolute_deadline_including_post_down(self):
+        for after_down in (False, True):
+            with self.subTest(after_down=after_down):
+                runtime = Runtime()
+                actual = runtime.__call__
+                clock = [0.0]
+
+                def boundary(argv, **kwargs):
+                    result = actual(argv, **kwargs)
+                    if "down" in argv:
+                        clock[0] = 1800
+                    return result
+                with patch.object(smoke.time, "monotonic", side_effect=lambda: clock[0]), \
+                        patch.object(smoke.subprocess, "run", side_effect=boundary):
+                    harness = self.harness()
+                    harness.execute()
+                    runtime.calls.clear()
+                    clock[0] = 1710 if after_down else 1800
+                    with self.assertRaisesRegex(smoke.Failure, "total_deadline"):
+                        harness.shutdown()
+                self.assertEqual(bool(runtime.calls), after_down)
+                if after_down:
+                    self.assertIn("down", runtime.calls[-1][0])
+                self.assertNotEqual(harness.report["shutdown"], "PASS_VOLUMES_IMAGES_PRESERVED")
+
     def test_readonly_defaults_preserve_overrides_and_remaining_budget_clamp(self):
         queries = {
             "inventory_containers": ("ps", "-a"), "inventory_networks": ("network", "ls"),

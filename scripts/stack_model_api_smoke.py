@@ -616,7 +616,7 @@ class Harness:
     def candidate(self, name):
         return name == self.project or name.startswith((self.project + "-", self.project + "_"))
 
-    def inventory(self, images=False, ports=False):
+    def inventory(self, images=False, ports=False, *, cleanup=False):
         """Union separate name/reference and label queries, never an AND filter.
 
         Docker name filters match substrings/regex; image reference uses globs.
@@ -639,7 +639,7 @@ class Harness:
                 output = self.docker(*args, "--filter", selection,
                                      *([] if kind == "volumes" else ["--no-trunc"]), "--format",
                                      CONTAINER_INVENTORY_FORMAT if kind == "containers" else "{{json .}}",
-                                     operation="inventory_" + kind)
+                                     operation="inventory_" + kind, cleanup=cleanup)
                 for line in output.splitlines():
                     if not line.strip():
                         continue
@@ -660,12 +660,12 @@ class Harness:
             result[kind] = list(rows.values())
         return result
 
-    def owned(self, strict=False, discover=False):
+    def owned(self, strict=False, discover=False, *, cleanup=False):
         """Batch exact snapshot inspection; rediscover before project-wide mutations."""
         if strict:
             require(self.known is not None, "ownership_changed")
         if not strict or discover:
-            inventory = self.inventory()
+            inventory = self.inventory(cleanup=cleanup)
             targets = {kind: {} for kind in ("containers", "networks", "volumes")}
             for kind in targets:
                 for row in inventory[kind]:
@@ -687,7 +687,7 @@ class Harness:
                           if kind == "containers" else {"members": ".Containers"} if kind == "networks" else {})
             template = "{" + ",".join('"' + key + '":{{json ' + value + '}}' for key, value in fields.items()) + "}"
             output = self.docker(resource, "inspect", *targets[kind].values(), "--format", template,
-                                 operation="inspect_" + kind)
+                                 operation="inspect_" + kind, cleanup=cleanup)
             rows = [json.loads(line) for line in output.splitlines() if line.strip()]
             require(len(rows) == len(targets[kind]), "ownership_changed")
             for row in rows:
@@ -744,10 +744,11 @@ class Harness:
         self.container_images.update(observed_images)
         return found
 
-    def built_images(self):
+    def built_images(self, *, cleanup=False):
         for service in ("mlflow", "model-api"):
             fields = self.docker("image", "inspect", f"{self.project}-{service}:latest", "--format",
-                                 "{{json .Id}}|{{json .Config.User}}", operation="inspect_images").strip().split("|")
+                                 "{{json .Id}}|{{json .Config.User}}", operation="inspect_images",
+                                 cleanup=cleanup).strip().split("|")
             identity, user = map(json.loads, fields)
             require(re.fullmatch(r"sha256:[a-f0-9]{64}", identity), "invalid_image_id")
             if service == "model-api":
@@ -1056,14 +1057,14 @@ class Harness:
             return
         # Timed-out backend operations might still create resources after inspection.
         require(not self.uncertain, "backend_state_uncertain")
-        before = self.owned(strict=True, discover=True)
+        before = self.owned(strict=True, discover=True, cleanup=True)
         self.report["snapshots"]["before_shutdown"] = before
         self.compose("down", "--timeout", "20", timeout=90, cleanup=True, operation="compose_shutdown")
-        after = self.owned()
+        after = self.owned(cleanup=True)
         require(not after["containers"] and not after["networks"]
                 and after["volumes"] == before["volumes"], "shutdown_preservation")
         images = dict(self.images)
-        self.built_images()
+        self.built_images(cleanup=True)
         require(self.images == images, "shutdown_image_preservation")
         self.report["snapshots"]["stopped"] = after
         self.report["shutdown"] = "PASS_VOLUMES_IMAGES_PRESERVED"
