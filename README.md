@@ -1,6 +1,13 @@
 # invoiceops-stack
 
-**Estado vigente (2026-10-16): STACK-01 COMPLETED por validación manual declarada por el usuario (USER_REPORTED), no por PASS automatizado.** Los tres intentos fallidos se preservan como historia; sus recursos propios se retiraron mediante limpieza irreversible expresamente confirmada. Véase [cierre manual y limpieza final](#cierre-manual-y-limpieza-final). Stack pasa a **2/9 (22.2%)**; no se acredita preparación productiva. La receta sigue en [STACK-01: overlay local](#stack-01-overlay-local). Las afirmaciones del registro de STACK-00 sobre scaffold y autorización son históricas, no el estado actual.
+**Estado vigente (2026-10-19): STACK-02 COMPLETED localmente — VALIDATED**, con ejecución estándar fresca ops08 **PASS, 11/11 pruebas**, salida 0 en **556.121 s (9 min 16.121 s)**. [Cierre vigente y hallazgos CR006–CR011](#cierre-vigente-stack-02--prueba-estándar-ops08). Stack sigue **3/9 (33.3%)**: corregir hallazgos no suma tickets ni completa STACK-08/INT-06. Los FAIL y recuperaciones anteriores se conservan como historia; no se acredita preparación productiva. STACK-01 mantiene **USER_REPORTED** y API-06 **ACCEPTED_RISK**. Siguiente: sólo planificar y definir validación local de MLFLOW-07; STACK-03 espera APP-13 → APP-12 → APP-11 (CR-004 remoto abierto). Sin autorización operativa adicional.
+
+**Delta de revisión (2026-10-19): READY_WITH_FOLLOW_UP.** CR012 **RESOLVED_LOCAL**;
+CR013 **OPEN — FOLLOW_UP_REQUIRED (MEDIUM)**, sin riesgo aceptado implícito ni
+corrección autorizada. CR001–CR011 conservan sus resoluciones; no queda `MUST_FIX`,
+pero no están cerrados todos los hallazgos. [Ledger vigente](#cierre-de-hallazgos-stack-02).
+ops08 es evidencia histórica anterior al launcher CR012, no una nueva prueba de
+estos bytes. [Cierre técnico y gates HOST/Linux](../invoiceops-model-api/README.md#privacidad-de-stdoutstderr-del-worker-cr-012).
 
 ## Registro histórico de STACK-00
 
@@ -227,6 +234,8 @@ Para retirar únicamente el arnés operacional, retirar sus dos archivos nuevos 
 
 ### Cierre manual y limpieza final
 
+> Cierre de 2026-10-16. Sus resultados y conteos se conservan; STACK-02 al final define la continuidad vigente.
+
 **STACK-01 COMPLETED localmente por validación manual del usuario, 2026-10-16 (USER_REPORTED).** El solicitante declaró «completado, ya lo validé» y confirmó el alcance irreversible de limpieza únicamente para `stack01-proof-20261016-ops01`, `stack01-proof-20261016-ops02` y `stack01-proof-20261016-ops03`. No se reprodujo esa validación con herramientas y ningún smoke fallido se reclasifica como PASS.
 
 S1/arnés y S2 están implementados; CR001 resuelto. S2 tiene evidencia offline previa de **32 PASS en 5.988 s** y selección del padre **17 PASS en 4.355 s**, no repetidas aquí. ops01 falló antes de mutaciones y ops02 por TIMEOUT del consumidor. El único ops03 terminó **FAIL / salida 1 en 160.221 s**: build **PASS 2.291 s**, inicio **PASS 39.553 s**, acceso anónimo/inválido **401/401**. El consumidor salió con código 1 tras **80.666 s**, no TIMEOUT del arnés; diario de **27 eventos**, último `run_query/after` seguido de `artifact_download/before` (`client.download_artifacts`). Causa **UNKNOWN**, excepción original suprimida. Apagado **PASS 28.974 s**, entonces con dos volúmenes preservados y sin contenedores ni redes.
@@ -243,3 +252,210 @@ El diario acredita progreso parcial de autenticación positiva/workspace/run/log
 Se usó exclusivamente `unix:///var/run/docker.sock`, `--host` explícito, entorno permitido y configuración Docker temporal anónima, retirada al salir. Inventario final objetivo: **0 contenedores, 0 redes, 0 volúmenes y 0 etiquetas de imagen**. Conjuntos de identificadores/nombres ajenos antes/después iguales: **44 contenedores, 15 redes, 36 volúmenes y 75 filas ID/etiqueta de imagen**; no prueba invariancia interna de sus datos. Sin errores ni reintentos de comandos, prune/reset, build/pull, arranque, nuevas pruebas funcionales, credenciales ambientales, SSH u operaciones remotas. Código, pruebas y Compose se conservaron; la eliminación de datos sintéticos no tiene rollback.
 
 **Continuidad vigente:** Stack **2/9 (22.2%)**. Siguiente recomendación: **planificar STACK-02**, sujeto a aprobación propia y sin iniciarlo; dependencias conservadas API-06 (cerrado por excepción ACCEPTED_RISK, no PASS operativo) y STACK-01 (cierre manual). No se autoriza publicación, despliegue, staging, commit ni push. La receta operacional anterior sigue disponible sólo para una futura ejecución expresamente autorizada con proyecto y reporte nuevos; estos intentos eliminados no son instalaciones reutilizables.
+
+## STACK-02: Model API local
+
+**COMPLETED — VALIDATED (2026-10-19).** El overlay `compose.model-api.yml` añade Model API al stack ML local. ops08 acredita ahora el flujo estándar completo con PostgreSQL/MinIO normales, sin sustituir artifacts por sistema de archivos. La recuperación de 2026-10-17 sigue siendo evidencia histórica, no el fundamento exclusivo del estado vigente. Véase el [cierre ops08](#cierre-vigente-stack-02--prueba-estándar-ops08).
+
+### Configuración: tercera capa, sin prueba operacional implícita
+
+> El diagnóstico ops01 y su retirada siguientes son históricos: sus frases sobre CR007 pendiente describen ese momento. El resultado vigente es ops08 PASS; ningún FAIL anterior se reclasifica.
+
+Desde `invoiceops-stack`, el orden obligatorio es **base MLflow → overlay Stack → overlay Model API**, manteniendo `--project-directory ../invoiceops-mlflow` y `--env-file /dev/null`. Ejemplo de validación de configuración para una operación futura autorizada, **no ejecutado en esta conciliación**:
+
+```bash
+docker --host unix:///var/run/docker.sock compose -p invoiceops-stack \
+  --project-directory ../invoiceops-mlflow --env-file /dev/null \
+  -f ../invoiceops-mlflow/compose.yml -f ./compose.yml \
+  -f ./compose.model-api.yml config --quiet
+```
+
+Requiere ambos repositorios hermanos MLflow y Model API, además del contrato de secretos de STACK-01: credenciales PostgreSQL/MinIO/MLflow y secreto del servidor obligatorios, suministrados por el operador sólo al proceso. Model API requiere tracking/registry apuntando al MLflow interno `http://mlflow:5000`, credencial lectora y workspace correspondientes al modelo, y token administrativo dedicado `MODEL_API_ADMIN_TOKEN`; no reutilizar indiscriminadamente la cuenta administradora como lector ni imprimir configuración interpolada. No leer ni copiar archivos de entorno para validar esta receta.
+
+La allowlist MLflow admite el host interno exacto `mlflow:5000` y hosts loopback con los puertos explícitos correspondientes, sin wildcard ni bypass. Las publicaciones al host se mantienen en loopback; PostgreSQL y MinIO no se publican. No cambiar las credenciales, permisos ni políticas de confianza para resolver un timeout.
+
+**Diagnóstico del intento fresco del 19-10-2026, sin cierre de CR007.** `stack02-proof-20261019-ops01.json` conserva FAIL en `base_start`. La inspección autorizada posterior verificó los cuatro contenedores propios: inicializador terminado con código 0, PostgreSQL/MinIO sanos y el mismo MLflow finalmente sano, sin reinicios ni OOM. MLflow comenzó a las **18:23:25.470 UTC**, anunció Uvicorn a las **18:27:57.515** (**272,044 s**) y completó el arranque de cuatro workers a las **18:28:14.3** (**288,8 s**). Se observaron después sondeos de los tres servicios con demoras simultáneas de **26–36 s**. La VM disponía de **8,218 GB**, con **29** contenedores activos, unos **6,75 GB** de memoria agregada y sólo **180 kB** de swap libre de **1 GB**. Presión de memoria PSI media de 300 s: **32,26 % some / 21,77 % full**; I/O: **45,01 % some / 20,51 % full**. Estos datos acreditan contención y disponibilidad tardía, no un error fatal de migración ni una atribución exacta del retraso entre migraciones e imports. MLflow propio consumía **2,067 GiB**, con **14** procesos y **210** PIDs según Docker. El stderr original de Compose fue suprimido y los eventos históricos no se recuperaron: no se reconstruye su mensaje exacto. No se repitió el arnés ni se modificó el informe fallido.
+
+**Tolerancia local de arranque autorizada expresamente por el usuario.** La nueva instrucción amplía únicamente la espera base de MLflow de **180 a 330 s**, con watchdog del comando de **360 s** (30 s de margen CLI); no es aprobación de la opción retirada de un worker. Sólo la tercera capa opcional añade `mlflow.healthcheck.start_period: 330s`, para no contar fallos iniciales contra los reintentos durante esa gracia; un sondeo exitoso puede declarar salud antes. Conserva íntegros el comando, sus **4 workers** actuales y el resto del healthcheck (sondeo, intervalo **5 s**, timeout **5 s**, **12** reintentos). MLflow base y STACK-01 de dos capas conservan `start_period: 10s` y sus presupuestos originales. Los **289 s** observados bajo contención severa justifican este margen de tolerancia del entorno, no una corrección de la causa exacta anterior a Uvicorn, un arranque más rápido ni un SLO. La secuencia tracking → auth → servidor, autenticación, jobs y dependencias no cambian. Compose debe terminar con salida 0; un fallo de espera sigue siendo FAIL y un timeout exterior mantiene incertidumbre y bloquea el apagado automático. No se modifican Docker Desktop ni cargas ajenas. El FAIL original permanece inmutable; todavía no hay PASS de una ejecución fresca con este ajuste, ni cierre de CR007.
+
+La retirada autorizada posterior validó de nuevo IDs, nombres, labels, rutas Compose, fechas de creación, imágenes, publicaciones y montajes; la red sólo contenía miembros propios. Se detuvieron y retiraron los **4** contenedores y la **1** red mediante sus IDs exactos, sin reconstruir secretos efímeros ni ejecutar Compose con otro entorno. Comprobación final: **0 contenedores**, **0 redes**, los mismos **2 volúmenes** y las **5 imágenes** referenciadas conservados. No se eliminaron volúmenes, imágenes ni caché; el informe original mantiene su estado histórico de apagado desconocido. La limpieza posterior no convierte el intento en PASS.
+
+### Receta del arnés nuevo: requiere autorización operacional separada
+
+La receta estándar ya se ejecutó una vez con autorización en ops08 y aprobó las once pruebas; no se ejecuta en esta conciliación documental. Cualquier repetición requiere autorización propia, proyecto e informe nuevos. No reutilizar ops08 ni otros intentos anteriores.
+
+| Entrada de Compose | Contrato |
+| --- | --- |
+| `STACK_MODEL_API_MLFLOW_USERNAME`, `STACK_MODEL_API_MLFLOW_PASSWORD` | Lector dedicado obligatorio; no cuenta administradora. |
+| `MODEL_API_ADMIN_TOKEN` | Token administrativo dedicado obligatorio; no credencial MLflow. |
+| `STACK_MODEL_API_PORT` | Puerto loopback de Model API; default `5800`; el arnés exige `--api-port` explícito. |
+| `STACK_MLFLOW_PORT` | Puerto loopback de MLflow; default `5000`; el arnés exige `--mlflow-port` explícito y diferente. |
+| `STACK_POSTGRES_PASSWORD`, `STACK_MINIO_ROOT_USER`, `STACK_MINIO_ROOT_PASSWORD` | Credenciales de infraestructura obligatorias de STACK-01. |
+| `MLFLOW_AUTH_ADMIN_USERNAME`, `MLFLOW_AUTH_ADMIN_PASSWORD`, `MLFLOW_FLASK_SERVER_SECRET_KEY` | Bootstrap/autenticación del servidor obligatorios; nunca credenciales de serving. |
+
+Para configuración manual, suministrar estos valores sólo al proceso desde un mecanismo aprobado, sin leer archivos `.env*`, imprimir configuración interpolada ni incluir secretos en argumentos. El arnés nuevo **genera sus propias credenciales efímeras**, no consume credenciales del operador. Usa un `HOME`/`DOCKER_CONFIG` temporal anónimo, sin contextos ni sesiones ambientales. Requiere Python y ejecutables Docker/Compose ya instalados y de confianza; no instala herramientas ni controla Docker Desktop.
+
+Ejemplo ejecutable **sólo después de autorización propia** y desde `invoiceops-stack`: definir `PROOF_REPORT_DIR` como un directorio privado existente del operador, fuera de Git, con ruta absoluta canónica; el archivo del informe no debe existir. La salida compartible es sólo el reporte sanitizado, no stdout/stderr crudos, configuración interpolada ni logs privados. Cambiar proyecto/puertos si no están libres. El prefijo por sí solo no acredita propiedad.
+
+```bash
+python3 -B scripts/stack_model_api_smoke.py --execute \
+  --project stack02-proof-new-authorized01 \
+  --docker-host unix:///var/run/docker.sock \
+  --mlflow-port 15500 --api-port 15800 \
+  --report "${PROOF_REPORT_DIR}/stack02-proof-new-authorized01.json"
+```
+
+El parser admite `--docker-binary /ruta/absoluta/docker`, `--compose-binary /ruta/absoluta/docker-compose` y `--temp-root /directorio/absoluto/existente`. Sin overrides descubre únicamente ejecutables mediante `PATH` y ubicaciones conocidas de instalación; usa el temporal de la plataforma, sin rutas personales heredadas de STACK-01. Un ejecutable ausente/no ejecutable produce fallo explícito, no PASS ni skip. Las pruebas de configuración permiten `STACK_MODEL_API_COMPOSE_BINARY` como override absoluto equivalente y sólo ejecutan `config`, con valores sintéticos y salida capturada.
+
+**Bootstrap y auditoría.** En workspace `default`, sin `MLFLOW_WORKSPACE`, el arnés crea un experimento propio, el modelo `invoice-review-production`, un usuario no administrador y un rol con exactamente dos permisos `READ`: ID exacto del experimento y nombre exacto del modelo registrado. No concede `USE`, comodines ni administración al lector. Comprueba permisos y asignación exactos mediante `list_role_permissions`/`list_user_roles` y `get_user`; el recibo sólo acredita `reader_nonadmin`/`exact_read_role`, no publica secretos. La fase lectora verifica lecturas y hashes de artifacts contra la fixture y MinIO, además de siete denegaciones de escritura **403**. Para auditoría posterior, contrastar esos mismos IDs/permisos en la instancia propia mediante un canal autorizado; no inferir privilegios de un simple health 200.
+
+**Presupuestos y disponibilidad.** El overlay local mantiene refresh `MODEL_REFRESH_TIMEOUT_SECONDS=120`; el default global sigue en **30 s**. Startup incorpora `MODEL_STARTUP_TIMEOUT_SECONDS=180` (default global **180 s**, finito y positivo obligatorio): carga y deserializa en un worker propio y registra intento/éxito/fallo sanitizado. El estimador permanece en ese worker; el API sólo recibe primitivas JSON acotadas por pipes no bloqueantes, sin `Connection.recv()` ni unpickle del modelo. Un champion ausente/fallido deja `/health` en **200** tras terminar startup, pero `/models/invoice-review/health` y predict en **503**, sin cambiar sus schemas. Un refresh fallido conserva el worker activo completo.
+
+**Corrección CR009 verificada:** los tests con hijos reales comprueban tramas parciales/corruptas/tardías, escritura bloqueada, deserialización e inferencia bloqueadas y recolección tras cancelación repetida. La inferencia tiene **10 s**, incluida cola del RPC. Las leases preservan modelo/run anteriores durante refresh; el drenaje del retirado tiene **10 s** y existen como máximo **3 × entradas del catálogo** de owners en total (activos, candidato y retirados), con reserva atómica antes de crearlos. La limpieza añade hasta **0,3 s** de esperas por worker; si el SO no confirma terminación, se informa `cleanup_unverified`, se conserva su ocupación de capacidad y se reintenta al cerrar. Shutdown reserva **0,5 + 0,3 × owners s** de esperas. Dimensionar memoria para la coexistencia de workers; no es un sandbox ni un límite RSS. ops08 añade startup real exitoso con champion; las regresiones offline no se presentan como fallos inyectados dentro de ese smoke.
+
+Los imports del módulo anteriores al lifespan **no están cubiertos** por el deadline de startup. El watchdog externo sigue siendo responsabilidad del arnés/supervisor: readiness conserva **331 s = 150 s** de margen de import (observación previa de **134.635 s**) **+ 180 s** de startup **+ 1 s** de margen final (hasta **0,3 s** de limpieza y **0,7 s** de sondeo/planificación). No se incrementó el presupuesto. Cada GET limita tanto el timeout HTTP interno como el watchdog del hijo al presupuesto restante; una respuesta recibida al alcanzar o superar el deadline se rechaza. Un timeout de ese GET no se confunde con una mutación de backend indeterminada. El healthcheck de Model API en Compose usa `start_period: 331s` y comprueba el modelo, no sólo liveness. No es un SLO ni prueba de cancelación del backend; si el catálogo crece, revisar este presupuesto por cada carga secuencial.
+
+Los refresh positivo y negativo usan consumidor HTTP **125 s** (120 del proveedor + margen de respuesta); el HTTP embebido tiene watchdog externo **132 s**. El release real recibe `MODEL_RELEASE_HTTP_TIMEOUT_SECONDS=125` (default conserva **10 s**, máximo admitido **125 s**) y su proceso exterior dispone de **400 s** para tres solicitudes. No usar 5/10 s heredados para este caso local. Todo se limita además al deadline total **1800 s**, reservando **120 s** para cierre; no se reintentan las fases de prueba. HTTP **503** observado es terminal; timeout, transporte indeterminado, recibo inválido o salida fallida durante una mutación no demuestran cancelación y bloquean el `down` automático.
+
+**Lectura del resultado.** El arnés exige **11 pruebas** en `proof_status`, con schema `STACK02-v1` y los mismos flags de invocación. Tras el snapshot de los cuatro contenedores base, `minio_idempotency` verifica propiedad/ID/imagen y estado detenido exitoso de `minio-init`, ejecuta una sola vez `docker start --attach <ID propio verificado>` (máximo **30 s**) y exige otra vez estado `exited`, ExitCode **0** y todas las identidades propias iguales. Reutiliza el contenedor y su entorno generado: no crea recursos ni otro bucket; ejercita de nuevo el bootstrap MC existente contra el bucket ya creado. El éxito del comando por sí solo no acredita la prueba.
+
+Luego comprueba sin champion: liveness 200, modelo/predict 503 y refresh sin token/con token inválido 401. Después del primer release exitoso, `startup_champion` ejecuta **un único** `compose restart --timeout 10 model-api` (watchdog **30 s**), con las tres capas habituales y propiedad/IDs/imágenes verificados antes y después. Reutiliza readiness absoluta de **331 s**, exige health/predict **200/200**, run/versión canónicos y probabilidad válida; guarda la evidencia en `proofs.startup_champion`. Es una prueba deliberada de startup con champion, **no** un reintento ni recuperación para ocultar fallos. No reinicia MLflow, Docker Desktop ni servicios ajenos. Después, al quitar su alias espera refresh 503 y modelo activo 200, restaura el alias y repite release. Los presupuestos total **1800 s**, build **600 s** y reserva de cierre **120 s** no cambian; ninguna fase obtiene tiempo adicional si el restante se agota.
+
+Sólo devuelve salida **0 / PASS** con las once pruebas y cierre propios aprobados. Salida 1/FAIL, pruebas UNKNOWN o `UNKNOWN_REQUIRES_REVIEW` no son cierre exitoso; un timeout de cualquiera de las dos mutaciones nuevas mantiene incertidumbre y bloquea `down` automático. `backend_cancellation: NOT_PROVEN` se conserva incluso en PASS: expresa una capacidad general no demostrada, no un fallo cuando todas las fases terminan. La recuperación histórica y los informes FAIL anteriores no se convierten en PASS. ops08 satisface ahora CR007; esta documentación no autoriza repetirlo.
+
+**Limpieza y rollback del arnés.** Usa siempre las tres capas y el mismo project-directory, proyecto y socket. Antes de `down --timeout 20`, valida nombres, labels Compose, config_files, working_dir, bindings, imágenes e IDs inmutables contra snapshots propios; nunca `-v`, borrado de imágenes, prune ni selección masiva por prefijo. Preserva los dos volúmenes y las imágenes. Si hay incertidumbre, no ejecuta `down`: revisar manualmente procesos y estado antes de autorizar acciones dirigidas por IDs verificados. Si se perdió el entorno efímero, **no reconstruir secretos ni invocar a ciegas Compose**; contrastar el informe con inspección autorizada de identidades/labels/rutas/puertos y acreditar que no queda trabajo activo antes de autorizar retirada dirigida de contenedores/red propios. Los volúmenes/imágenes retenidos requieren autorización separada para eliminarlos.
+
+> Diagnósticos históricos ops04–ops07: las conclusiones siguientes de «no fresh PASS» y los estados de recursos se refieren a esos intentos. No describen ops08 ni reabren CR007; las mejoras de observabilidad no son hallazgos nuevos pendientes.
+
+**CR007 ownership queries and timeout diagnosis (code evidence only).** Discovery deduplicates the **union of separate** name/reference and project-label queries, not an AND. Postfiltering retains exact project/`-`/`_` prefixes, unlabeled collisions and label-only foreign names, including images in preflight. [Name filters](https://github.com/docker/cli/blob/v27.4.0/docs/reference/commandline/volume_ls.md) match substrings; [image references](https://github.com/moby/moby/blob/v27.4.0/daemon/images/image_list.go) use familiar-reference patterns. Separate `publish` queries preserve host-port checks ([Docker 27.4: `PublicPort`](https://github.com/moby/moby/blob/v27.4.0/daemon/list.go)).
+
+Ordinary SDK checks replace global listings with three batch inspections of **recorded** container/network IDs and volume names. Names, Compose provenance, images, loopback bindings, mounts and network membership remain checked; SDK exec targets the verified ID. Project-wide `up`/`restart`/`down` still require complete scoped discovery. Extra/replaced resources or unavailable discovery block cleanup with `UNKNOWN_REQUIRES_REVIEW`, never blind `down`. Scoped queries are not immune to daemon contention.
+
+**Container inventory projection.** On ops04 with Docker **27.4.0**, the same scoped `ps -a` filter timed out with `{{json .}}` at **8.020 s**, while ID-only returned four rows in **0.388 s** and explicit `ID/Names/Labels/Ports` JSON in **0.906 s**. Full JSON with `--size=false` also timed out (**8.013 s**): size calculation alone is not established as the cause. [Full-context serialization evaluates formatter getters](https://github.com/docker/cli/blob/v27.4.0/cli/command/formatter/reflect.go), and [template preprocessing can request size data](https://github.com/docker/cli/blob/v27.4.0/cli/command/container/list.go). Container inventory now requests only the four required fields; union/deduplication, name/label/image/port collision checks, complete discovery and exact inspection guards are unchanged. Its operation label remains `inventory_containers`. In the current execution order, `base_start` inventory occurs **after** successful Compose `up`; a missing snapshot does not prove no resources were created. No timeout budget was increased, and this diagnostic comparison is not a fresh proof run.
+
+Later, a minimal scoped cleanup query and direct Unix-socket Engine `/version` request also timed out at **8 s**. This limits the diagnosis: the projection avoids the demonstrated full-context path, but cannot resolve all daemon contention. Four owned containers, one network and two volumes had been verified by scoped discovery/exact inspection beforehand; subsequent cleanup stopped at read-only preconditions, with **no stop/remove command dispatched**. Their final state is not certified absent, and the immutable ops04 report remains unchanged.
+
+Read-only Docker inventory/inspection and Compose `config` now default to **60 s**, preserving explicit overrides and total-deadline clamping, based on the observed **30.022 s timeout + 10 s pause + 6.778 s successful recheck** (not a single 46.8-second query or a root-cause/faster-server claim), with no automatic retry or mutation-budget change.
+
+The bounded `operation` field records only whitelisted `category`, `status` (`completed`, `failed`, `timeout`) and monotonic `elapsed_seconds`; cleanup preserves the primary failure's operation. A phase `bootstrap` timeout labeled `inspect_networks` does **not** imply SDK dispatch. No argv, child output, credentials or provider exception is recorded. All eleven proofs, schema/CLI, four workers and existing budgets stay unchanged. The historical blocking operation remains unproven; this is not a fresh PASS or closure of CR007.
+
+**Reader SDK compatibility.** [MLflow 3.16.0 response verification](https://github.com/mlflow/mlflow/blob/v3.16.0/mlflow/utils/rest_utils.py) maps a plain-text HTTP 403 to `MlflowException`, not its `RestException` subclass. Basic-auth has a plain-text forbidden-response path. The reader now accepts either exception shape **only when its status is exactly 403**; artifact uploads still require an actual HTTPError response with status 403. Offline tests exercise all seven real SDK write methods, reject other statuses/transport failures/successful writes, and execute the complete reader branch with five-file hash checks. Download APIs, exact two READ grants, permissions, trust and budgets are unchanged. A controlled real-SDK download also survives a denied optional logged-model search; that probe alone is not a proven cause of ops03.
+
+On any nonzero SDK action exit, `sdk_diagnostic` may retain one validated `STACK02_DIAGNOSTIC=` marker with only a constant `stage`, whitelisted `exception` category and numeric `http_status` (0 if unavailable). The all-action exception hook additionally reports `source_line`, bounded to the embedded SDK source, and suppresses raw unhandled tracebacks. Fixture stages distinguish imports, fit, save, trust validation, reload, probability shape, upload, run status, version creation and alias assignment; reader contexts retain their existing fine-grained stages. Unknown/oversized/duplicate markers, extra fields and markers from non-SDK commands are ignored; the failure remains FAIL. No raw message, traceback, URI or credential is persisted. Ops03 and ops05 precise failing calls remain unproven because their exceptions were suppressed; immutable FAIL reports are not reclassified by improved diagnostics.
+
+**Direct S3 diagnostics and import isolation.** The objects action now imports boto3, not MLflow or `MlflowClient`. Its receipt explicitly identifies `transport: direct_s3`, the executing `boto3` version, and `mlflow_installed` from package metadata; it does not claim an MLflow SDK call. Fixture and reader still execute the real MLflow SDK. The internal validator requires the same complete fixture manifest, workspace and installed MLflow version; the CLI, `STACK02-v1` schema and eleven required proofs are unchanged. Successful object receipts are retained in `proofs.objects`.
+
+S3 progress distinguishes client construction, listing, GET headers, body reads and final manifest equality. The exception hook recognizes a fixed botocore class allowlist and reads `ClientError.response` as a dictionary. Generated S3 service exceptions such as `NoSuchKey` are normalized through their actual botocore `ClientError` base class. It retains only an allowed HTTP status and `error_code` enum (`other` otherwise), never the response, error message, request ID, URL or credentials. Malformed metadata is rejected or reduced to an unknown value; failures still fail. Connect **5 s**, read **10 s**, one total attempt and the overall SDK **150 s** deadline are unchanged: a historical timeout has not been established.
+
+The additional offline gate `tests/stack_model_api_s3_checks.py` runs in an **already-installed** boto3/botocore runtime, accepting JSON `{"source": "<actual embedded SDK source>"}` on stdin. It tests real exception prototypes and the complete direct-S3 branch with actual boto3/StreamingBody, replacing only external transport and forbidding socket connections. It verifies five hashes, rejects corruption and detects accidental MLflow imports. This gate is separate because the existing host API virtual environment does not contain boto3/botocore; no dependency is installed and the normal host suite remains daemon-free.
+
+A failed release child may additionally retain `release_diagnostic`: only an exact known method/path and constant failure phrase from the existing release script are accepted. The bounded record identifies `refresh`, `health` or `predict`, an allowed category and HTTP status (0 when absent). It distinguishes terminal HTTP 503 from a consumer timeout without retaining arbitrary stderr. Failure and backend-uncertainty handling remain conservative; this diagnostic does not itself authorize cleanup or turn release into PASS.
+
+#### Historia ops07: evidencia parcial inicial y recuperación posterior
+
+> La tabla siguiente describe el punto intermedio anterior a la recuperación final; no es el inventario ni el estado vigente. El cierre estándar actual está en [ops08](#cierre-vigente-stack-02--prueba-estándar-ops08).
+
+The immutable standard `stack02-proof-20261019-ops07.json` remains **FAIL** (exit 1, **332.268 s**, five of eleven proofs). Its original `get_object` exception is not recoverable from the suppressed output. Exact snapshot ownership, provenance, bindings, mounts, network membership and images were verified before later probes. Both a minimal S3 probe (**0.622 s**) and the old MLflow-importing objects path (**4.576 s**) subsequently matched all five original hashes, so neither a historical timeout nor an import-induced transport failure is established. No S3 timeout was increased.
+
+| New evidence on the same ops07 instance | Observed result |
+| --- | --- |
+| Current direct-S3 branch | Five original fixture hashes, boto3 **1.37.34**, **1.113 s**. |
+| Actual MLflow **3.16.0** reader | Five download hashes and all seven exact **403** denials, **54.379 s**. |
+| Real release | Failed after **120.584 s**; own API access log confirms refresh **503**. |
+| Isolated owned loader diagnostic | Repeated artifact requests returned HTTP **200** headers; provider failed with `ModelLoadFailure` reason `timeout` after **121.589 s**. The repeating download's underlying exception is not identified. |
+| Narrow single-file SDK diagnostic | Original `MLmodel` hash matched in **26.414 s**, without extending its request deadline or adding retries. |
+| Subsequent real release | Failed at the consumer deadline; bounded diagnostic is `refresh / timeout / 0`. Continuation wall time **132.893 s**; this does not prove backend cancellation or a terminal second refresh response. |
+| Estado intermedio entonces observado | Process health **200**, model health **503**, no active model-worker process in that scan; exec states accounted for. Then **5 containers / 1 network / 2 volumes / 2 built images** remained. No restart, alias removal or shutdown had yet been dispatched. |
+
+Los informes privados `stack02-proof-20261019-ops07-resolution.json` y `stack02-proof-20261019-ops07-resolution-completion.json` conservan sus fallos y los UNKNOWN de aquel punto. El informe posterior `stack02-proof-20261019-ops07-loader-resolution.json` acredita las once comprobaciones compuestas como **RECOVERY_PASS_CAUSE_UNDETERMINED**, no una ejecución estándar fresca. Una aserción de host inválida de la sonda diagnóstica rechazaba respuestas MinIO firmadas legítimas **HTTP 206**, provocando reintentos inyectados; se retiró y se restauraron los bytes de API del contenedor. La `ConnectionError` observada en el loader real no tiene causa subyacente establecida. La recuperación no demuestra una corrección de raíz del SDK o la red productiva; ops08 aporta después la prueba estándar independiente. Estos basenames locales no versionados no son enlaces Git portables.
+
+Validación histórica de esas correcciones: **81 pruebas host PASS (40.639 s)** y **4 de frontera S3 PASS (5.033 s)**, con RED real de aislamiento de imports y diagnóstico de release. Los timeouts intermedios siguen siendo intentos fallidos, no reintentos ocultos. La selección host posterior del padre aprobó **81 en 18.809 s** antes de ops08; no se suman ambas ejecuciones ni se presentan como pruebas nuevas de esta edición. Pins, schemas, confianza, permisos y cuatro workers MLflow permanecen intactos; el [cierre vigente](#cierre-vigente-stack-02--prueba-estándar-ops08) concilia el resto de gates.
+
+**Progreso ante bloqueos del SDK.** El hijo emite `STACK02_PROGRESS=process_start` con vaciado inmediato antes de los imports y después una etapa constante al comenzar la decodificación de stdin, los imports, la configuración y cada operación lógica. Un fallo o timeout del SDK puede conservar únicamente la última etapa permitida en `sdk_last_stage`, también desde la salida parcial en bytes de `TimeoutExpired`. No se almacenan mensajes del proveedor, URL ni credenciales; un marcador no convierte un fallo en PASS ni acredita cancelación. Las operaciones exitosas siguen validando sus recibos originales. No se amplían presupuestos ni se añaden reintentos.
+
+En el diagnóstico conservado `diag06`, las sondas mínimas mediante `docker exec -i` completaron tanto `json.load` con EOF como la decodificación de una línea: no se confirmó un bloqueo por cierre de stdin. Una lectura autenticada acreditó HTTP 200 y el experimento ya creado por el bootstrap que había agotado el watchdog. La recuperación verificó el rol propio con exactamente dos permisos READ y usuario no administrador; sólo se rotó la contraseña perdida de ese usuario sintético mediante la API administrativa normal. La fixture real produjo un run FINISHED, versión 1 y cinco archivos con hashes, sin cambiar el pipeline ni la confianza. Un intento lector posterior falló en `download` con `MlflowException`/404; una instrumentación adicional del transporte completó la misma rama con las cinco descargas y siete denegaciones. La implementación instalada de `RunsArtifactRepository.download_artifacts` puede suprimir excepciones internas y terminar con 404: este dato no identifica por sí solo la excepción original de ese intento. Los informes fallidos permanecen intactos; ninguna de estas recuperaciones constituye una prueba estándar fresca ni demuestra la causa histórica de ops05.
+
+Rollback de código: retirar únicamente las correcciones propias de este lote tras revisión del diff, sin sobrescribir cambios heredados ni los ajustes H2 de MLflow que mantienen credenciales fuera de argv. Omitir la tercera capa deshabilita Model API en una futura invocación; no detiene una instancia ya creada ni autoriza ninguna operación. No revertir deadlines a la carga síncrona sin límite como mitigación operacional.
+
+### Evidencia de recuperación y límites
+
+> Primer cierre histórico, 2026-10-17. Se preservan hechos, límites y conteos; la evidencia estándar fresca de 2026-10-19 se añade al final y sustituye el estado actual de «sólo recuperación».
+
+| Comprobación ya ejecutada | Resultado y alcance |
+| --- | --- |
+| Champion local | `invoice-review-production@champion`, versión `1`, run `f674cd0a06cd40abb633f5a0ef94c91a`. |
+| Health/predict | HTTP **200/200**, misma versión/run, probabilidad `0.000059535190842276645`. |
+| Release real | Salida **0 en 57.039 s**; tras restaurar el alias, **PASS en 10.294 s**. |
+| Fallo controlado | Alias ausente: refresh **503**, modelo activo conserva health/predict **200**; alias restaurado después. |
+| Lector y artifacts | REST real, siete denegaciones **403** y cinco hashes MinIO iguales a descargas HTTP independientes. Diagnóstico SDK con timeout; manifiesto local original no recuperado, sin igualdad triple acreditada. |
+| Gate independiente | **PASS / RECOVERY_VALIDATED**, riesgo HIGH, sin bloqueantes para los dos criterios originales; no certifica arnés nuevo completo ni producción. |
+
+Informe sanitizado local no versionado: `stack02-proof-20261017-ops02-recovery.json` en la raíz local `diplomado`, schema `STACK02-recovery-v1`, estado `PASS_RECOVERY_EXISTING_INSTANCE`. Los informes retenidos `stack02-proof-20261017-ops01.json` y `stack02-proof-20261017-ops02.json` conservan **FAIL**, sin sobrescritura; estos basenames no son enlaces portables del repositorio.
+
+La fixture ahora declara dependencias pip ya instaladas y evita el subproceso redundante de inferencia de `save_model`; su plazo original de **150 s** no se amplió. Fit/save/roundtrip corregido **84.064 s** y carga directa **85.267 s**; imports fríos **57.653/40.790/134.635 s**, bajo presión de memoria de la VM y swap agotado. El último excede 120 s: **fiabilidad del arnés nuevo en frío pendiente**, sin atribuir una causa universal OMP ni prometer SLO. No hubo reinicio de Docker Desktop en la recuperación; el reinicio manual anterior del usuario había restablecido el daemon.
+
+Spotchecks finales del responsable: **20 pruebas smoke PASS en 0.196 s** y **11 de configuración PASS en 2.573 s**; revisión estática independiente sin debilitamiento de aserciones. Son evidencia recibida, no pruebas repetidas en esta actualización documental.
+
+### Limpieza y continuidad del cierre histórico de 2026-10-17
+
+Tras validar identidades se retiraron **cinco contenedores y una red propios**; se preservaron **dos volúmenes nombrados y dos imágenes construidas**. No se tocaron proyectos ajenos según las operaciones reportadas; no se afirma igualdad global de inventarios ni que los volúmenes sintéticos sean una instalación reutilizable. Su eliminación futura requiere autorización propia.
+
+Stack **3/9 (33.3%)**, sin completar STACK-08 ni INT-06. Siguiente recomendación: **planificar y definir validación local de MLFLOW-07**, cuyas dependencias MLFLOW-04 y APP-04 están completadas, sin iniciar provisioning compartido/remoto. STACK-03 espera APP-13, que depende de APP-12 y su cierre pendiente de APP-11; STACK-04 espera además APP-11. El [flujo vigente](../dev/tickets/08_flujo_ideal_de_tickets.md#continuidad-vigente--prueba-estándar-stack-02-2026-10-19) mantiene los bloqueos y el diferimiento remoto. API-06 conserva ACCEPTED_RISK y STACK-01 USER_REPORTED. Esta conciliación no autoriza servicios, pruebas operativas, publicación, staging, commit ni push.
+
+### Cierre vigente STACK-02 — prueba estándar ops08
+
+**VALIDATED, 2026-10-19: ejecución estándar fresca PASS, 11/11 pruebas.** El padre ejecutó una vez el `main` habitual, sin wrapper diagnóstico, hooks ni cambios de fuente: salida **0**, duración monotónica observada **556.121 s**. Esta edición sólo concilia documentación; no vuelve a ejecutar runtime. Fuente: `stack02-proof-20261019-ops08.json`, **145 líneas**, schema `STACK02-v1`, `status: PASS`, en la raíz local `diplomado`; es un informe local no versionado, no un enlace Git portable. La duración y salida proceden de la observación del proceso, no de campos del JSON.
+
+Orden público exacto: `preflight → build → base_start → minio_idempotency → bootstrap → api_start → missing_champion → fixture → objects → reader → release → startup_champion → missing_alias → restored`.
+
+| Pruebas y recibos | Evidencia y límite |
+| --- | --- |
+| `preflight`, `bootstrap`, `minio_idempotency` | PASS. Inicializador `exited`, código **0**, mismo ID que el snapshot inicial tras repetirlo una vez. Bootstrap valida lector no administrador y dos grants READ exactos. |
+| `fixture`, `objects` | PASS. Run **FINISHED**, SDK **3.16.0**, workspace `default`, versión **1**, run `d1dac16fa153465e8222c786c5a07fd9`. Los **cinco hashes** de `proofs.fixture.manifest` y `proofs.objects.manifest` coinciden. Objects usa **direct_s3 / boto3 1.37.34**; `mlflow_installed: 3.16.1` es metadata instalada, no ejecución de `MlflowClient` en esa acción. |
+| `reader` | PASS de la rama SDK real que exige cinco hashes descargados y siete denegaciones exactas 403. El JSON no serializa las respuestas individuales del lector ni cada 403: acredita las aserciones ejecutadas mediante `proof_status.reader`. |
+| `missing_champion`, `release`, `missing_alias`, `restored` | Todos PASS por comprobaciones ejecutadas: ausencia inicial, release real, refresh 503 con alias ausente y conservación del modelo activo 200, restauración y release final. Esos HTTP negativos no son campos crudos individuales del JSON. |
+| `startup_champion` | PASS; recibo crudo health/predict **200/200**, versión **1**, mismo run, probabilidad **0.000059535190842276645**. ID API idéntico al snapshot inicial después del reinicio deliberado. |
+| Cierre | `PASS_VOLUMES_IMAGES_PRESERVED`; snapshot `stopped` con **0 contenedores / 0 redes**, exactamente los dos volúmenes propios conservados. No certifica invariancia global de recursos ajenos. |
+
+Residuos ops08 preservados, sin autorización de borrado:
+
+- `stack02-proof-20261019-ops08_minio_data` y `stack02-proof-20261019-ops08_postgres_data`.
+- Imagen MLflow: `sha256:93e96654ecfdf635e800ec52d37c4d93a15d380191c2ee74aab601b104b24520`.
+- Imagen API: `sha256:4b4b6d3129dbaa3c794b82bc17b86bb8a13ef0193a9fb6338b9391aa88ac6371`.
+
+#### Cierre de hallazgos STACK-02
+
+CR001–CR005 mantienen sus resoluciones previas, sin reclasificación. No quedan hallazgos obligatorios abiertos de CR006–CR011 en este lote:
+
+| Hallazgo | Estado y resolución verificada |
+| --- | --- |
+| CR006 | **CERRADO / VERIFICADO**: transporte 125 s, watchdog 132 s y release exterior 400 s; distingue HTTP terminal de mutación incierta, sin `down` ciego. Default del consumidor 10 s y máximo 125 s intactos. |
+| CR007 | **CERRADO / VERIFICADO**: ops08 estándar fresco PASS 11/11; no sólo recuperación. Se conservan los FAIL originales y las causas históricas desconocidas. |
+| CR008 | **CERRADO / VERIFICADO**: runbook anterior con flags, variables exactas, bootstrap/lector, tres capas, binarios confiables, temporal privado, auditoría, reportes, residuos y rollback que preserva H2. |
+| CR009 | **CERRADO / VERIFICADO**: owner/worker y proxy JSON 16 KiB, IPC no bloqueante, startup 180 s, inferencia/drenaje 10 s, capacidad preasignada atómicamente 3 × catálogo, leases y cierre acotado con owners no verificados retenidos. Regresiones offline y startup con champion real en ops08. |
+| CR010 | **CERRADO / VERIFICADO**: sin dependencia nueva de TEMP_ROOT personal; overrides absolutos de Docker/Compose/temporal, HOME/config anónimos. Binario ausente es bloqueo de entorno, no PASS; sin descubrir contextos ni autenticación ambiental. |
+| CR011 | **CERRADO / VERIFICADO**: readiness 331 = 150 + 180 + 1 s, HTTP/hijo limitados al tiempo restante y rechazo de recibos tardíos. No promete tiempo real del SO. |
+| CR012 | **RESOLVED_LOCAL (HIGH)**: stdout/stderr del hijo a `DEVNULL` antes de exec mediante `QuietSpawnContext`/`Popen`, sin redirigir FD del proceso HTTP ni ampliar contratos/dependencias. Revisión independiente y gates HOST/Linux acotados; [evidencia y límites](../invoiceops-model-api/README.md#privacidad-de-stdoutstderr-del-worker-cr-012). |
+| CR013 | **OPEN — FOLLOW_UP_REQUIRED (MEDIUM)**: reserva de cierre no propagada a todas las consultas de cierre; fuente sin corregir, fuera de la autorización CR012. No es `ACCEPTED_RISK`. |
+
+**Veredicto vigente del lote: READY_WITH_FOLLOW_UP**, no `READY` sin reservas ni
+todos los hallazgos cerrados. El bloqueo HIGH de CR012 que motivó
+`CHANGES_REQUESTED` está resuelto localmente; CR013 sigue abierto.
+
+**Seguimiento CR013 de STACK-02:** en `scripts/stack_model_api_smoke.py:552–559`,
+el presupuesto resta **120 s** salvo `cleanup=True`; `shutdown:1053–1068` sólo
+lo pasa a `down`, no a las consultas de propiedad, inventario y postimágenes.
+A **1690/1800 s**, con **110 s** restantes, se rechazan antes de consultar;
+un `down` iniciado a **1660 s** que termina en **30 s** puede dejar el postcheck
+de **1690 s** en `UNKNOWN`. Riesgo conservador: recursos retenidos o falso
+FAIL, **no** falso PASS ni `down` ciego. Solución para un cambio futuro separado:
+propagar el contexto de presupuesto de cleanup a **todas** las comprobaciones
+de cierre, preservando el límite absoluto **1800 s**, identidad y guardas de
+incertidumbre. Validar antes/en/después de **1680 s**, post-`down` y **1800 s**.
+No se corrige fuente ni se da por aceptado este riesgo en el cierre CR012.
+
+**Gates recibidos, no reejecutados ni sumados como una única corrida:** API **131 PASS en 41.31 s** (incluye **49** de worker), Ruff/formato API PASS; release **17 PASS** anteriores sin cambios; Stack **81 PASS en 18.809 s** antes de ops08; frontera boto3 **4 PASS en 5.033 s**; MLflow H2/guarda de contexto **27 PASS** anteriores sin cambios. El Ruff exploratorio Stack de 28 observaciones no es gate configurado ni se declara limpio: observaciones no bloqueantes según revisión, sin nuevas exenciones ni `noqa`.
+
+**Historial y límites:** permanecen intactos los FAIL de 2026-10-17 ops01/02 y de 2026-10-19 ops01/02/03/04/05/07, además de diag06 y las recuperaciones. ops08 prueba este flujo completo actual, no una raíz histórica corregida, fiabilidad universal en frío, SLO productivo, sandbox/RSS ni atestación de argv de procesos cortos. `backend_cancellation=NOT_PROVEN` conserva su significado general; no invalida las fases completadas. No cambia autenticación, pins, confianza, transporte S3 normal ni defaults globales.
+
+**Continuidad:** App **12/15 (80%)**; ML **14/16 (87.5%)**; MLflow **6/9 (66.7%)**; Model API **7/9 (77.8%)**; Contracts **3/7 (42.9%)**; Stack **3/9 (33.3%)**; integración **2/7 (28.6%)**. Sólo planificar MLFLOW-07; no se completa App, Anvil, STACK-08 ni INT-06 ni se autoriza otro ticket, provisioning o acceso remoto. [Seguimiento vigente](../dev/tickets/Implementado.md#cierre-vigente-stack-02--prueba-estándar-completa-2026-10-19).
