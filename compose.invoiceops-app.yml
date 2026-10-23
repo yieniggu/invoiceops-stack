@@ -1,0 +1,65 @@
+# Optional fourth layer: load the MLflow base, Stack, Model API, and App Compose files first.
+services:
+  db:
+    environment:
+      POSTGRES_USER: invoiceops
+      POSTGRES_DB: invoiceops
+      POSTGRES_PASSWORD: ${STACK_APP_POSTGRES_PASSWORD:?Set STACK_APP_POSTGRES_PASSWORD in the operator environment}
+    volumes: !override
+      - app_postgres_data:/var/lib/postgresql/data
+
+  db-test:
+    ports: !override
+      - "127.0.0.1:${STACK_APP_TEST_DB_PORT:-5436}:5432"
+
+  backend:
+    build:
+      context: ../invoiceops-app
+      dockerfile: apps/backend/Dockerfile
+    depends_on:
+      model-api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://invoiceops:${STACK_APP_POSTGRES_PASSWORD:?Set STACK_APP_POSTGRES_PASSWORD in the operator environment}@db:5432/invoiceops?schema=public
+      MODEL_API_URL: ${MODEL_API_URL:?Set MODEL_API_URL in the operator environment}
+      MODEL_API_MODEL_ID: ${MODEL_API_MODEL_ID:?Set MODEL_API_MODEL_ID in the operator environment}
+    ports: !override
+      - "127.0.0.1:${STACK_APP_BACKEND_PORT:-3000}:3000"
+
+  frontend:
+    build:
+      context: ../invoiceops-app
+      dockerfile: apps/frontend/Dockerfile
+    ports: !override
+      - "127.0.0.1:${STACK_APP_FRONTEND_PORT:-5173}:80"
+
+  app-bootstrap:
+    profiles: ["stack03-bootstrap"]
+    build:
+      context: ../invoiceops-app
+      dockerfile: apps/backend/Dockerfile
+      target: build
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://invoiceops:${STACK_APP_POSTGRES_PASSWORD:?Set STACK_APP_POSTGRES_PASSWORD in the operator environment}@db:5432/invoiceops?schema=public
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - sh
+      - -ec
+      - >-
+        cd apps/backend;
+        config="./stack03-prisma-config-$$.mjs";
+        trap 'rm -f "$$config"' EXIT;
+        printf '%s\n' 'import { defineConfig, env } from "prisma/config"; export default defineConfig({ schema: "prisma/schema.prisma", migrations: { path: "prisma/migrations" }, datasource: { url: env("DATABASE_URL") } });' > "$$config";
+        if ! ./node_modules/.bin/prisma migrate deploy --config "$$config"; then
+          printf '%s\n' 'STACK03_APP_BOOTSTRAP=MIGRATION_FAILED' >&2; exit 41;
+        fi;
+        if ! ./node_modules/.bin/tsx src/local-demonstration.ts; then
+          printf '%s\n' 'STACK03_APP_BOOTSTRAP=FIXTURE_FAILED' >&2; exit 42;
+        fi
+
+volumes:
+  app_postgres_data:
