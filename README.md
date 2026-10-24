@@ -596,3 +596,108 @@ operacional ni verificación independiente. No cambian tickets, conteos ni ops08
 **Historial y límites:** permanecen intactos los FAIL de 2026-10-17 ops01/02 y de 2026-10-19 ops01/02/03/04/05/07, además de diag06 y las recuperaciones. ops08 prueba este flujo completo actual, no una raíz histórica corregida, fiabilidad universal en frío, SLO productivo, sandbox/RSS ni atestación de argv de procesos cortos. `backend_cancellation=NOT_PROVEN` conserva su significado general; no invalida las fases completadas. No cambia autenticación, pins, confianza, transporte S3 normal ni defaults globales.
 
 **Continuidad:** App **12/15 (80%)**; ML **14/16 (87.5%)**; MLflow **6/9 (66.7%)**; Model API **7/9 (77.8%)**; Contracts **3/7 (42.9%)**; Stack **3/9 (33.3%)**; integración **2/7 (28.6%)**. Sólo planificar MLFLOW-07; no se completa App, Anvil, STACK-08 ni INT-06 ni se autoriza otro ticket, provisioning o acceso remoto. [Seguimiento vigente](../dev/tickets/Implementado.md#cierre-vigente-stack-02--prueba-estándar-completa-2026-10-19).
+
+## STACK-04 AC-05 — operación futura de Anvil y despliegue local
+
+Esta sección conserva dos estados con procedencia distinta. **Estado histórico
+del slice estático (sustituido):** el smoke real **no fue ejecutado** durante ese
+slice; no se inició Anvil, no se consultó RPC, no se desplegó contrato ni se creó,
+inspeccionó o eliminó recurso Docker alguno. **Estado posterior vigente:** el
+smoke local posterior quedó **CLOSED / COMPLETED_LOCAL_VALIDATED**. El cierre
+sustituye aquel estado histórico de no ejecución, pero no reclasifica la evidencia
+estática. El cierre no acredita CI, remoto, publicación o despliegue fuera del
+host local.
+
+### Preflight manual
+
+Antes de una autorización operacional independiente, el operador debe confirmar
+que dispone de Docker/Compose, Foundry (`cast`), Python 3 y de los repositorios
+hermanos `invoiceops-stack` e `invoiceops-contracts` en las rutas esperadas. Debe
+elegir un nombre nuevo que cumpla `stack04-proof-...`, un puerto TCP libre de
+loopback y las dos direcciones públicas no nulas que exige el wrapper. No usar
+`.env`, `.env.*`, claves privadas, cuentas remotas ni endpoints distintos de
+`http://127.0.0.1:<puerto>`.
+
+### Convención de proyecto Compose
+
+Para cada ejecución autorizada, el operador define un identificador nuevo y no
+secreto, por ejemplo:
+
+```bash
+STACK04_PROJECT=stack04-proof-example01
+STACK_ANVIL_PORT=18545
+```
+
+`compose.anvil.yml` conserva `name: invoiceops-anvil` como valor estático del
+archivo, pero **toda** invocación de este procedimiento debe llevar
+`-p "$STACK04_PROJECT"`. La bandera tiene prioridad sobre `name:` y fuerza que
+preflight, ejecución y cleanup compartan exactamente la identidad
+`stack04-proof-*`; no usar `COMPOSE_PROJECT_NAME` ni omitir `-p`.
+
+Antes de arrancar, comprobar únicamente que no haya contenedores, redes o
+volúmenes ya etiquetados con ese proyecto exacto. Una colisión, un puerto ocupado,
+la falta de un binario o una identidad de cadena distinta de `31337` bloquean el
+procedimiento: no se cambia de proyecto, puerto, RPC ni contrato de forma
+silenciosa.
+
+El preflight usa el mismo identificador forzado:
+
+```bash
+docker --host unix:///var/run/docker.sock compose -p "$STACK04_PROJECT" \
+  --env-file /dev/null -f ./compose.anvil.yml ps --all
+```
+
+### Orden manual futuro
+
+Con autorización explícita y variables no secretas entregadas sólo al proceso
+que las necesite, la secuencia es:
+
+1. Iniciar exclusivamente `compose.anvil.yml` con el proyecto y puerto elegidos;
+   no se une a las capas MLflow, Model API ni App:
+
+   ```bash
+   docker --host unix:///var/run/docker.sock compose -p "$STACK04_PROJECT" \
+     --env-file /dev/null -f ./compose.anvil.yml up -d
+   ```
+2. Esperar la salud de Anvil y comprobar que `cast chain-id` contra el endpoint
+   loopback devuelve exactamente `31337`.
+3. Ejecutar primero el wrapper sin `--execute` para validar el plan local. Sólo
+   después, y en la misma autorización, usar `--execute` con las direcciones
+   públicas aprobadas para delegar al script local existente de Contracts.
+4. Registrar el resultado operativo fuera de este README y evaluar el cleanup
+   antes de cerrar la ejecución.
+
+La composición usa el proyecto elegido como frontera de propiedad. Los recursos
+propios son exclusivamente los contenedores, red y volúmenes que Compose etiquete
+con ese proyecto exacto. La imagen base de Foundry, cachés, recursos de otros
+proyectos y cualquier recurso sin esa etiqueta no pertenecen a este procedimiento
+y no deben eliminarse.
+
+### Límites, cleanup y rollback
+
+El smoke estático sólo revisa bytes locales; no acredita disponibilidad del daemon,
+salud real, publicación de puertos, chain ID, cuentas desbloqueadas, despliegue,
+receipt, dirección de contrato ni integración de App. Tampoco autoriza red,
+instalaciones, migraciones, broadcasts, despliegues remotos o cambios de secretos.
+
+Al finalizar una operación futura, el cleanup sólo es aceptable si el inventario
+del proyecto exacto confirma que los recursos propios esperados fueron retirados
+y que no se actuó sobre recursos ajenos. Ante inventario incompleto, etiquetas
+inconsistentes, timeout, error de Compose o duda de propiedad, detenerse y
+conservar la evidencia para revisión: no usar `prune`, borrado forzado, `-v`,
+eliminación de imágenes compartidas ni limpieza por prefijos amplios.
+
+Tras verificar esa propiedad, el cleanup usa el mismo proyecto forzado y no
+elimina volúmenes:
+
+```bash
+docker --host unix:///var/run/docker.sock compose -p "$STACK04_PROJECT" \
+  --env-file /dev/null -f ./compose.anvil.yml down
+```
+
+El rollback operacional consiste en detener y retirar únicamente los recursos
+verificados del proyecto de prueba, sin borrar volúmenes ni imágenes. El rollback
+de este slice es revertir esta sección y su prueba estática asociada en un cambio
+posterior revisado; no restaura ni modifica App, Contracts, Solidity o la
+composición Anvil. Si se llegó a desplegar un contrato, el rollback de código no
+revierte su estado de cadena: la red local debe tratarse como evidencia separada.

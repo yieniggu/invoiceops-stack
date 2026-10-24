@@ -1,0 +1,16 @@
+name: invoiceops-anvil
+
+# Standalone local EVM layer: it deliberately does not join the application stack.
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:stable
+    entrypoint: ["anvil"]
+    command: ["--quiet", "--host", "0.0.0.0", "--port", "8545", "--chain-id", "31337", "--hardfork", "cancun"]
+    ports:
+      - "127.0.0.1:${STACK_ANVIL_PORT:-8545}:8545"
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$(cast chain-id --rpc-url http://127.0.0.1:8545)\" = \"31337\""]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
