@@ -1,5 +1,71 @@
 # invoiceops-stack
 
+## STACK-08 — smoke integrado local y offline
+
+`scripts/stack_integrated_smoke.py` es un arnés **opt-in**: sólo actúa con
+`--execute` y un proyecto nuevo `stack08-proof-*`. Construye explícitamente,
+bajo ese proyecto, las capas locales de MLflow, Model API y App; después inicia
+siempre con `--no-build --pull never`, verifica salud, prepara el fixture de
+modelo, ejecuta una predicción y escribe un recibo sanitizado con permisos
+`0600`. No se ejecuta automáticamente como parte de la validación estática.
+
+### Cierre local completo: STACK-08 (2026-10-24)
+
+El subflujo de fixture MLflow queda **RESOLVED_LOCAL_VALIDATED**. El arnés
+reenvía las credenciales de lector existentes sólo al bootstrap que crea el
+usuario y su rol de lectura; para el único fixture que escribe experimento, run,
+artefactos, versión y alias, reenvía temporalmente las credenciales de
+administración sólo al contenedor efímero. Los valores nunca aparecen como
+argumentos, recibos ni salida retenida.
+
+La investigación aislada confirmó que el backend de App expone liveness JSON en
+`/health/live`; la ruta anterior `/health` no satisfacía ese contrato. El arnés
+verifica ahora esa ruta, crea una decisión respaldada por Model API, construye su
+lote de evidencia, despliega el contrato en Anvil local y ejecuta
+`anchor → reconcile`.
+
+La ejecución fresca `stack08-proof-finalpass1024` aprobó todas las fases:
+`preflight`, `build`, `anvil`, `contract`, `mlflow`, `model_api`, `app_schema`,
+`app`, `prediction`, `evidence` y `anchor_reconcile`. El recibo
+[`evidence/stack08-proof-finalpass1024.json`](evidence/stack08-proof-finalpass1024.json)
+es `PASS`, no retiene salidas ni secretos, y la reinspección posterior confirmó la
+ausencia de contenedores, red, volúmenes e imágenes derivadas del proyecto exacto.
+
+**STACK-08 queda CLOSED / COMPLETED_LOCAL_VALIDATED**. Stack pasa a
+**6/9 (66.7%)**. La evidencia acredita únicamente este entorno local aislado: no
+certifica CI, publicación, despliegue, Anchor remoto ni una cadena pública.
+
+El entorno hijo mantiene un `PATH` restringido y sin variables del operador.
+Para localizar el CLI, el arnés acepta únicamente un ejecutable `docker`
+ejecutable en directorios conocidos, incluido `/usr/local/bin`; no hereda el
+`PATH` ambiental. Si no puede localizarlo, falla con `docker_cli_not_found`.
+
+Antes de construir, el arnés inspecciona las bases declaradas en los Dockerfile.
+Sin `--allow-network-build`, si falta una imagen base o una capa de dependencias
+en la caché local termina con `offline_build_cache_miss`: el preflight offline
+permanece *fail-closed*.
+
+Para el build local autorizado que necesita recuperar esas entradas, use
+`--execute --allow-network-build`. Este segundo flag es un opt-in explícito y
+estrecho: permite continuar únicamente con ese build local. Bajo la autorización
+operativa correspondiente, las dependencias previstas pueden contactar de forma
+anónima Docker Hub, GHCR, PyPI y registry.npmjs.org. El arnés no implementa una
+allowlist técnica de destinos; su aislamiento se limita a no iniciar login,
+credenciales, push, despliegue remoto ni Anchor remoto, y a no leer `.env`. Anvil,
+Foundry y Anchor se ejecutan exclusivamente dentro del proyecto local aislado. Tras el
+build, el runtime conserva el proyecto `stack08-proof-*` aislado, inicia con
+`--no-build --pull never` y el cleanup mantiene su comportamiento *fail-closed*.
+
+No existe pipeline, deploy ni registry de imágenes de InvoiceOps en este
+repositorio. Las etiquetas derivadas por Compose, por ejemplo
+`stack08-proof-example-mlflow:latest`, son artefactos locales y efímeros del
+proyecto de prueba; no son imágenes publicadas. Para reanudar, use otro proyecto
+`stack08-proof-*` y otro recibo nuevo después de restaurar las bases/capas en
+caché. El cleanup falla cerrado: elimina sólo identidades con la etiqueta Compose
+del proyecto exacto y las etiquetas derivadas exactas tras comprobar por image ID
+que ningún contenedor las referencia; no usa `down`, `prune` ni recursos
+`invoiceops-local-*`.
+
 **Último estado (2026-10-20): CR-013 RESOLVED_LOCAL_VERIFIED**, tras revisión
 independiente. Todos los checks de cierre reciben contexto de cleanup; la prueba
 reserva 120 s y el cierre se limita al deadline absoluto de 1800 s. Regresiones con
@@ -446,7 +512,7 @@ El parser admite `--docker-binary /ruta/absoluta/docker`, `--compose-binary /rut
 
 **Corrección CR009 verificada:** los tests con hijos reales comprueban tramas parciales/corruptas/tardías, escritura bloqueada, deserialización e inferencia bloqueadas y recolección tras cancelación repetida. La inferencia tiene **10 s**, incluida cola del RPC. Las leases preservan modelo/run anteriores durante refresh; el drenaje del retirado tiene **10 s** y existen como máximo **3 × entradas del catálogo** de owners en total (activos, candidato y retirados), con reserva atómica antes de crearlos. La limpieza añade hasta **0,3 s** de esperas por worker; si el SO no confirma terminación, se informa `cleanup_unverified`, se conserva su ocupación de capacidad y se reintenta al cerrar. Shutdown reserva **0,5 + 0,3 × owners s** de esperas. Dimensionar memoria para la coexistencia de workers; no es un sandbox ni un límite RSS. ops08 añade startup real exitoso con champion; las regresiones offline no se presentan como fallos inyectados dentro de ese smoke.
 
-Los imports del módulo anteriores al lifespan **no están cubiertos** por el deadline de startup. El watchdog externo sigue siendo responsabilidad del arnés/supervisor: readiness conserva **331 s = 150 s** de margen de import (observación previa de **134.635 s**) **+ 180 s** de startup **+ 1 s** de margen final (hasta **0,3 s** de limpieza y **0,7 s** de sondeo/planificación). No se incrementó el presupuesto. Cada GET limita tanto el timeout HTTP interno como el watchdog del hijo al presupuesto restante; una respuesta recibida al alcanzar o superar el deadline se rechaza. Un timeout de ese GET no se confunde con una mutación de backend indeterminada. El healthcheck de Model API en Compose usa `start_period: 331s` y comprueba el modelo, no sólo liveness. No es un SLO ni prueba de cancelación del backend; si el catálogo crece, revisar este presupuesto por cada carga secuencial.
+Los imports del módulo anteriores al lifespan **no están cubiertos** por el deadline de startup. El watchdog externo sigue siendo responsabilidad del arnés/supervisor: readiness conserva **331 s = 150 s** de margen de import (observación previa de **134.635 s**) **+ 180 s** de startup **+ 1 s** de margen final (hasta **0,3 s** de limpieza y **0,7 s** de sondeo/planificación). No se incrementó el presupuesto. Cada GET limita tanto el timeout HTTP interno como el watchdog del hijo al presupuesto restante; una respuesta recibida al alcanzar o superar el deadline se rechaza. Un timeout de ese GET no se confunde con una mutación de backend indeterminada. El healthcheck de Model API en Compose usa `start_period: 331s` y comprueba liveness en `/health`, para que la dependencia no quede bloqueada antes de crear la fixture. La readiness del modelo se conserva en `/models/invoice-review/health` después de la fixture y exige `200` antes de las pruebas que dependen del modelo. No es un SLO ni prueba de cancelación del backend; si el catálogo crece, revisar este presupuesto por cada carga secuencial.
 
 Los refresh positivo y negativo usan consumidor HTTP **125 s** (120 del proveedor + margen de respuesta); el HTTP embebido tiene watchdog externo **132 s**. El release real recibe `MODEL_RELEASE_HTTP_TIMEOUT_SECONDS=125` (default conserva **10 s**, máximo admitido **125 s**) y su proceso exterior dispone de **400 s** para tres solicitudes. No usar 5/10 s heredados para este caso local. Todo se limita además al deadline total **1800 s**, reservando **120 s** para cierre; no se reintentan las fases de prueba. HTTP **503** observado es terminal; timeout, transporte indeterminado, recibo inválido o salida fallida durante una mutación no demuestran cancelación y bloquean el `down` automático.
 

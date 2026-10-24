@@ -24,6 +24,11 @@ services:
       DATABASE_URL: postgresql://invoiceops:${STACK_APP_POSTGRES_PASSWORD:?Set STACK_APP_POSTGRES_PASSWORD in the operator environment}@db:5432/invoiceops?schema=public
       MODEL_API_URL: ${MODEL_API_URL:?Set MODEL_API_URL in the operator environment}
       MODEL_API_MODEL_ID: ${MODEL_API_MODEL_ID:?Set MODEL_API_MODEL_ID in the operator environment}
+      # STACK-08's explicitly isolated Compose Anvil route. The App config
+      # accepts this non-loopback HTTP endpoint only with this exact smoke marker.
+      EVM_RPC_URL: http://anvil:8545
+      EVM_CHAIN_ID: "31337"
+      EVM_LOCAL_STACK_SMOKE: STACK-08
     ports: !override
       - "127.0.0.1:${STACK_APP_BACKEND_PORT:-3000}:3000"
 

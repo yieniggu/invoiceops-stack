@@ -41,44 +41,44 @@ cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
 
 
-def validate_model_readiness_probe(command):
+def validate_model_liveness_probe(command):
     """Recognize a bounded Python urllib probe without executing its source.
 
     Supported form: one urllib.request import followed by an unconditional
-    urlopen(literal_model_url, timeout=positive_number), optionally read/close.
+    urlopen(literal_liveness_url, timeout=positive_number), optionally read/close.
     Uncaught HTTP/transport exceptions give Python a nonzero exit. Additional
     control flow, exception handling, exit overrides, or shell suffixes are not
     accepted. This is a static recognizer, not a general Python/shell verifier;
     other legitimate probe forms require a separately reviewed test extension.
     """
     if not isinstance(command, list) or not all(isinstance(item, str) for item in command):
-        raise ValueError("Readiness command must be a string list")
+        raise ValueError("Liveness command must be a string list")
     if command and command[0] == "CMD":
         argv = command[1:]
     elif len(command) == 2 and command[0] == "CMD-SHELL":
         try:
             argv = shlex.split(command[1])
         except ValueError:
-            raise ValueError("Malformed readiness shell quoting") from None
+            raise ValueError("Malformed liveness shell quoting") from None
         # Canonical shell quoting prevents expansions hidden inside a Python
         # comment/string from changing what the shell actually executes.
         if command[1] != shlex.join(argv):
-            raise ValueError("Readiness shell command requires canonical safe quoting")
+            raise ValueError("Liveness shell command requires canonical safe quoting")
     else:
-        raise ValueError("Unsupported readiness command form")
+        raise ValueError("Unsupported liveness command form")
     if len(argv) != 3 or argv[0] not in ("python", "python3") or argv[1] != "-c":
-        raise ValueError("Readiness must directly execute a Python -c probe")
+        raise ValueError("Liveness must directly execute a Python -c probe")
     try:
         body = ast.parse(argv[2]).body
     except SyntaxError:
-        raise ValueError("Invalid readiness Python syntax") from None
+        raise ValueError("Invalid liveness Python syntax") from None
     if len(body) != 2 or not isinstance(body[1], ast.Expr):
-        raise ValueError("Readiness requires an import and an unconditional request")
+        raise ValueError("Liveness requires an import and an unconditional request")
     imported = body[0]
     if isinstance(imported, ast.Import) and len(imported.names) == 1:
         name = imported.names[0]
         if name.name != "urllib.request":
-            raise ValueError("Unsupported readiness import")
+            raise ValueError("Unsupported liveness import")
         request_function = f"{name.asname}.urlopen" if name.asname else "urllib.request.urlopen"
     elif (
         isinstance(imported, ast.ImportFrom) and imported.module == "urllib.request"
@@ -87,7 +87,7 @@ def validate_model_readiness_probe(command):
     ):
         request_function = imported.names[0].asname or "urlopen"
     else:
-        raise ValueError("Readiness must import urllib.request.urlopen")
+        raise ValueError("Liveness must import urllib.request.urlopen")
     request = body[1].value
     if (
         isinstance(request, ast.Call) and isinstance(request.func, ast.Attribute)
@@ -101,19 +101,19 @@ def validate_model_readiness_probe(command):
         or ast.dump(request.func) != ast.dump(expected_function)
         or len(request.args) != 1 or not isinstance(request.args[0], ast.Constant)
         or request.args[0].value not in (
-            "http://127.0.0.1:8000/models/invoice-review/health",
-            "http://localhost:8000/models/invoice-review/health",
+            "http://127.0.0.1:8000/health",
+            "http://localhost:8000/health",
         )
     ):
-        raise ValueError("Readiness must call urlopen on the model health endpoint")
+        raise ValueError("Liveness must call urlopen on the process health endpoint")
     if len(request.keywords) != 1 or request.keywords[0].arg != "timeout":
-        raise ValueError("Readiness request must have a bounded timeout")
+        raise ValueError("Liveness request must have a bounded timeout")
     timeout = request.keywords[0].value
     if (
         not isinstance(timeout, ast.Constant) or type(timeout.value) not in (int, float)
         or not math.isfinite(timeout.value) or timeout.value <= 0
     ):
-        raise ValueError("Readiness timeout must be a finite positive literal")
+        raise ValueError("Liveness timeout must be a finite positive literal")
 
 
 class StackModelApiConfigTests(unittest.TestCase):
@@ -299,15 +299,15 @@ class StackModelApiConfigTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, "Invalid ModelAPI port was accepted")
         self.assertFalse(bool(result.stdout.strip()), "Failed config exposed partial output")
 
-    def test_readiness_targets_invoice_review_model_not_process_liveness(self):
-        """AC05: inspect the declared probe, not runtime model availability."""
+    def test_healthcheck_targets_process_liveness_not_model_readiness(self):
+        """AC05: Compose liveness cannot depend on the post-fixture model."""
         healthcheck = self.config()["services"]["model-api"]["healthcheck"]
         self.assertFalse(healthcheck.get("disable"))
-        validate_model_readiness_probe(healthcheck["test"])
+        validate_model_liveness_probe(healthcheck["test"])
 
-    def test_readiness_validator_accepts_bounded_request_fixtures_without_execution(self):
+    def test_liveness_validator_accepts_bounded_request_fixtures_without_execution(self):
         """Synthetic validator evidence only; not overlay rendering or HTTP proof."""
-        url = "http://127.0.0.1:8000/models/invoice-review/health"
+        url = "http://127.0.0.1:8000/health"
         scripts = (
             f"import urllib.request; urllib.request.urlopen({url!r}, timeout=2)",
             f"import urllib.request as req; req.urlopen({url!r}, timeout=1.5).read()",
@@ -315,14 +315,14 @@ class StackModelApiConfigTests(unittest.TestCase):
         )
         for script in scripts:
             with self.subTest(script=script):
-                validate_model_readiness_probe(["CMD", "python", "-c", script])
-                validate_model_readiness_probe([
+                validate_model_liveness_probe(["CMD", "python", "-c", script])
+                validate_model_liveness_probe([
                     "CMD-SHELL", f"python3 -c {shlex.quote(script)}",
                 ])
 
-    def test_readiness_validator_rejects_inert_and_failure_masking_fixtures(self):
+    def test_liveness_validator_rejects_inert_and_failure_masking_fixtures(self):
         """Parse fixtures only: never run a request or arbitrary probe source."""
-        url = "http://127.0.0.1:8000/models/invoice-review/health"
+        url = "http://127.0.0.1:8000/health"
         probe = f"import urllib.request; urllib.request.urlopen({url!r}, timeout=2)"
         scripts = (
             f"print({url!r}, 'urllib.request')",
@@ -331,7 +331,7 @@ class StackModelApiConfigTests(unittest.TestCase):
             f"import urllib.request\nif False: urllib.request.urlopen({url!r}, timeout=2)",
             f"import urllib.request\ntry: urllib.request.urlopen({url!r}, timeout=2)\nexcept: pass",
             probe + "; raise SystemExit(0)",
-            probe.replace("/models/invoice-review/health", "/health"),
+            probe.replace("/health", "/models/invoice-review/health"),
             probe.replace("timeout=2", "timeout=0"),
             probe.replace(", timeout=2", ""),
             probe.replace("urllib.request.urlopen(", "print("),
@@ -340,7 +340,7 @@ class StackModelApiConfigTests(unittest.TestCase):
         for index, script in enumerate(scripts):
             with self.subTest(fixture=index):
                 with self.assertRaises(ValueError):
-                    validate_model_readiness_probe(["CMD", "python", "-c", script])
+                    validate_model_liveness_probe(["CMD", "python", "-c", script])
         for command in (
             ["CMD-SHELL", f"echo {shlex.quote(url)} urllib.request"],
             ["CMD-SHELL", f"python -c {shlex.quote(probe)} || true"],
@@ -351,7 +351,7 @@ class StackModelApiConfigTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 with self.assertRaises(ValueError):
-                    validate_model_readiness_probe(command)
+                    validate_model_liveness_probe(command)
 
 
 if __name__ == "__main__":
