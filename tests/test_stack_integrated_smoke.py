@@ -2,9 +2,13 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import MagicMock, call, patch
 
@@ -126,7 +130,27 @@ class StackIntegratedSmokeRuntimeTests(unittest.TestCase):
                  patch.object(smoke, "Harness") as harness:
                 harness.return_value.finish.return_value = "PASS"
                 self.assertEqual(smoke.main(arguments), 0)
-                harness.assert_called_once_with(self.project, self.ports, path, allow_network_build)
+                harness.assert_called_once_with(self.project, self.ports, path, allow_network_build, False)
+
+    def test_cli_requires_an_explicit_flag_to_enable_the_notebook_champion_flow(self):
+        path = self.receipt_path()
+        arguments = ["--execute", "--notebook-champion", "--project", self.project, "--receipt", str(path)]
+        with patch.object(smoke, "Harness") as harness:
+            harness.return_value.finish.return_value = "PASS"
+            self.assertEqual(smoke.main(arguments), 0)
+        harness.assert_called_once_with(self.project, self.ports, path, False, True)
+
+    def test_notebook_champion_scopes_proxy_http_artifact_download_to_its_model_api_environment(self):
+        fixture = smoke.Harness(self.project, self.ports, self.receipt_path())
+        champion = smoke.Harness(self.project, self.ports, self.receipt_path(), notebook_champion=True)
+
+        self.assertNotIn("MODEL_API_ARTIFACT_DOWNLOAD_MODE", fixture.environment)
+        self.assertEqual(champion.environment["MODEL_API_ARTIFACT_DOWNLOAD_MODE"], "proxy-http")
+
+    def test_model_api_overlay_preserves_sdk_default_when_notebook_champion_does_not_override_it(self):
+        overlay = (ROOT / "compose.model-api.yml").read_text(encoding="utf-8")
+
+        self.assertIn('MODEL_API_ARTIFACT_DOWNLOAD_MODE: ${MODEL_API_ARTIFACT_DOWNLOAD_MODE:-sdk}', overlay)
 
     def test_build_is_explicit_and_every_up_disables_build_and_pull(self):
         harness = smoke.Harness(self.project, self.ports, self.receipt_path())
@@ -159,7 +183,7 @@ class StackIntegratedSmokeRuntimeTests(unittest.TestCase):
               patch.object(harness, "deploy_contract", side_effect=lambda: events.append("contract")), \
               patch.object(harness, "bootstrap_app", side_effect=lambda: events.append("bootstrap-app")), \
               patch.object(harness, "model_fixture", side_effect=model_fixture), \
-              patch.object(harness, "prediction_evidence", side_effect=lambda: {"batchId": "batch", "rootHash": "0x" + "a" * 64}), \
+              patch.object(harness, "prediction_evidence", side_effect=lambda **kwargs: {"batchId": "batch", "rootHash": "0x" + "a" * 64}), \
               patch.object(harness, "anchor_and_reconcile", side_effect=lambda batch: events.append("anchor-reconcile")), \
               patch.object(harness, "collect_owned", side_effect=lambda: events.append("evidence")), \
               patch.object(smoke, "http_json", side_effect=request):
@@ -174,6 +198,156 @@ class StackIntegratedSmokeRuntimeTests(unittest.TestCase):
         self.assertEqual(harness.phases, ["preflight", "build", "anvil", "contract", "mlflow", "model_api", "app_schema", "app", "prediction", "evidence", "anchor_reconcile"])
         self.assertEqual(requests[0], f"http://127.0.0.1:{self.ports[1]}/models/invoice-review/health")
         self.assertEqual(requests[1], f"http://127.0.0.1:{self.ports[2]}/health/live")
+
+    def test_execute_requires_a_real_notebook_champion_without_invoking_the_fixture(self):
+        harness = smoke.Harness(self.project, self.ports, self.receipt_path(), notebook_champion=True)
+        events = []
+        champion = {"run_id": "notebook-hgb-run", "version": "7", "gate": "PASS"}
+
+        with patch.object(harness, "preflight", side_effect=lambda: events.append("preflight")), \
+              patch.object(harness, "build", side_effect=lambda: events.append("build")), \
+              patch.object(harness, "notebook_run_champion", return_value=champion, create=True), \
+              patch.object(harness, "provision_notebook_reader", return_value={"experiment": "student/111111111/invoice-risk", "reader_nonadmin": True, "exact_read_role": True}), \
+              patch.object(harness, "model_fixture", side_effect=AssertionError("model_fixture_must_not_run")), \
+             patch.object(harness, "up", side_effect=lambda *services, **kwargs: events.append("up:" + ",".join(services))), \
+              patch.object(harness, "deploy_contract", side_effect=lambda: events.append("contract")), \
+              patch.object(harness, "bootstrap_app", side_effect=lambda: events.append("bootstrap-app")), \
+              patch.object(harness, "prediction_context", side_effect=lambda champion=None: events.append("prediction-context")), \
+              patch.object(harness, "prediction_evidence", return_value={"batchId": "batch", "rootHash": "0x" + "a" * 64}), \
+             patch.object(harness, "anchor_and_reconcile", side_effect=lambda batch: events.append("anchor-reconcile")), \
+             patch.object(harness, "collect_owned", side_effect=lambda: events.append("evidence")), \
+              patch.object(smoke, "http_json", side_effect=[
+                  (200, {"run_id": champion["run_id"], "model_version": champion["version"]}),
+                  (200, {}),
+                  (200, {"probability": 0.5, "run_id": champion["run_id"], "model_version": champion["version"]}),
+              ]):
+            harness.execute()
+
+        self.assertIn("up:model-api", events)
+        self.assertIn("up:backend,frontend", events)
+        self.assertIn("anchor-reconcile", events)
+
+    def test_notebook_reader_provisioning_grants_exact_academic_read_access(self):
+        harness = smoke.Harness(self.project, self.ports, self.receipt_path(), notebook_champion=True)
+        receipt = {"experiment": "student/111111111/invoice-risk", "reader_nonadmin": True, "exact_read_role": True}
+
+        with patch.object(smoke, "bounded_json_child", return_value=receipt) as child:
+            self.assertEqual(harness.provision_notebook_reader(), receipt)
+
+        command, environment = child.call_args.args[:2]
+        self.assertIn("-e", command)
+        self.assertEqual(environment["STACK_NOTEBOOK_EXPERIMENT"], "student/111111111/invoice-risk")
+        self.assertIn('expected = {("experiment", experiment.experiment_id, "READ"),', smoke.NOTEBOOK_READER_RECEIPT)
+        self.assertIn('("registered_model", "invoice-review-production", "READ")}', smoke.NOTEBOOK_READER_RECEIPT)
+        self.assertNotIn('data["project"]', smoke.NOTEBOOK_READER_RECEIPT)
+
+    def test_notebook_reader_provisioning_precedes_model_api_and_fails_closed(self):
+        harness = smoke.Harness(self.project, self.ports, self.receipt_path(), notebook_champion=True)
+        champion = {"run_id": "notebook-hgb-run", "version": "7", "gate": "PASS"}
+        events = []
+        module = type("Module", (), {"Harness": type("Fixture", (), {
+            "predict_payload": staticmethod(lambda: {"features": {}}),
+        })})
+
+        with patch.object(harness, "preflight"), patch.object(harness, "build"), \
+             patch.object(harness, "notebook_run_champion", return_value=champion), \
+             patch.object(harness, "provision_notebook_reader", side_effect=smoke.Failure("notebook_reader_invalid"), create=True), \
+             patch.object(harness, "up", side_effect=lambda *services, **kwargs: (
+                 (_ for _ in ()).throw(smoke.Failure("model_api_started")) if services == ("model-api",)
+                 else events.append(",".join(services)))), \
+             patch.object(smoke, "model_smoke_module", return_value=module):
+            with self.assertRaisesRegex(smoke.Failure, "notebook_reader_invalid"):
+                harness.execute()
+
+        self.assertNotIn("model-api", events)
+
+    def test_notebook_reader_provisioning_precedes_model_api(self):
+        harness = smoke.Harness(self.project, self.ports, self.receipt_path(), notebook_champion=True)
+        champion = {"run_id": "notebook-hgb-run", "version": "7", "gate": "PASS"}
+        reader = {"experiment": "student/111111111/invoice-risk", "reader_nonadmin": True, "exact_read_role": True}
+        events = []
+        module = type("Module", (), {"Harness": type("Fixture", (), {
+            "predict_payload": staticmethod(lambda: {"features": {}}),
+        })})
+
+        def up(*services, **kwargs):
+            events.append("up:" + ",".join(services))
+            if services == ("model-api",):
+                raise smoke.Failure("model_api_started")
+
+        with patch.object(harness, "preflight"), patch.object(harness, "build"), \
+             patch.object(harness, "notebook_run_champion", return_value=champion), \
+             patch.object(harness, "provision_notebook_reader", side_effect=lambda: events.append("reader") or reader), \
+             patch.object(harness, "up", side_effect=up), \
+             patch.object(smoke, "model_smoke_module", return_value=module):
+            with self.assertRaisesRegex(smoke.Failure, "model_api_started"):
+                harness.execute()
+
+        self.assertLess(events.index("reader"), events.index("up:model-api"))
+
+    def test_notebook_model_metadata_mismatches_stop_before_anvil_and_evidence(self):
+        cases = (
+            ("health", [(200, {"run_id": "other", "model_version": "7"})], "model_api_health_champion_mismatch"),
+            ("predict", [(200, {"run_id": "run", "model_version": "7"}), (200, {}),
+                         (200, {"probability": 0.5, "run_id": "other", "model_version": "7"})],
+             "model_api_prediction_champion_mismatch"),
+        )
+        champion = {"run_id": "run", "version": "7", "gate": "PASS"}
+
+        for name, responses, failure_code in cases:
+            with self.subTest(check=name):
+                harness = smoke.Harness(self.project, self.ports, self.receipt_path(), notebook_champion=True)
+                events = []
+                module = type("Module", (), {"Harness": type("Fixture", (), {
+                    "predict_payload": staticmethod(lambda: {"features": {}}),
+                })})
+                with patch.object(harness, "preflight"), patch.object(harness, "build"), \
+                     patch.object(harness, "notebook_run_champion", return_value=champion), \
+                     patch.object(harness, "provision_notebook_reader", return_value={"experiment": "student/111111111/invoice-risk", "reader_nonadmin": True, "exact_read_role": True}), \
+                     patch.object(harness, "up", side_effect=lambda *services, **kwargs: events.append(",".join(services))), \
+                     patch.object(harness, "bootstrap_app"), \
+                     patch.object(harness, "deploy_contract") as contract, \
+                     patch.object(harness, "prediction_evidence") as evidence, \
+                     patch.object(smoke, "model_smoke_module", return_value=module), \
+                     patch.object(smoke, "http_json", side_effect=responses):
+                    with self.assertRaisesRegex(smoke.Failure, failure_code):
+                        harness.execute()
+                self.assertNotIn(smoke.ANVIL_SERVICE, events)
+                contract.assert_not_called()
+                evidence.assert_not_called()
+
+    def test_invalid_notebook_candidates_stop_before_anvil_model_api_app_and_evidence(self):
+        cases = (
+            ("empty_run", {"run_id": "", "version": "7", "gate": "PASS"}, "notebook_run_missing"),
+            ("gate_not_pass", {"run_id": "notebook-hgb-run", "version": "7", "gate": "FAIL"}, "notebook_gate_not_pass"),
+            ("promotion_not_validable", {"run_id": "notebook-hgb-run", "version": "", "gate": "PASS"}, "champion_promotion_invalid"),
+        )
+
+        for name, candidate, failure_code in cases:
+            with self.subTest(candidate=name):
+                harness = smoke.Harness(self.project, self.ports, self.receipt_path(), notebook_champion=True)
+                events = []
+                failure = None
+                with patch.object(harness, "preflight", side_effect=lambda: events.append("preflight")), \
+                     patch.object(harness, "build", side_effect=lambda: events.append("build")), \
+                     patch.object(harness, "notebook_run_champion", return_value=candidate, create=True), \
+                     patch.object(harness, "model_fixture", return_value={"features": {}}) as fixture, \
+                     patch.object(harness, "up", side_effect=lambda *services, **kwargs: events.append("up:" + ",".join(services))), \
+                     patch.object(harness, "deploy_contract", side_effect=lambda: events.append("contract")), \
+                     patch.object(harness, "bootstrap_app", side_effect=lambda: events.append("bootstrap-app")), \
+                     patch.object(harness, "prediction_evidence", return_value={"batchId": "batch", "rootHash": "0x" + "a" * 64}), \
+                     patch.object(harness, "anchor_and_reconcile", side_effect=lambda batch: events.append("anchor-reconcile")), \
+                     patch.object(harness, "collect_owned", side_effect=lambda: events.append("evidence")), \
+                     patch.object(smoke, "http_json", side_effect=[(200, {}), (200, {}), (200, {"probability": 0.5})]):
+                    try:
+                        harness.execute()
+                    except smoke.Failure as error:
+                        failure = str(error)
+
+                self.assertEqual(events, ["preflight", "build", "up:postgres,minio,minio-init,mlflow,db"])
+                self.assertEqual(harness.phases, ["preflight", "build", "mlflow"])
+                self.assertEqual(failure, failure_code)
+                fixture.assert_not_called()
 
     def test_model_fixture_provisions_with_a_one_off_model_api_before_service_start(self):
         harness = smoke.Harness(self.project, self.ports, self.receipt_path())
@@ -289,7 +463,31 @@ class StackIntegratedSmokeRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(smoke.Failure, "prediction_model_lineage_missing"):
                 harness.prediction_evidence()
 
-        child.assert_called_once()
+        child.assert_not_called()
+
+    def test_notebook_champion_requires_exact_app_decision_lineage_before_evidence(self):
+        harness = smoke.Harness(self.project, self.ports, self.receipt_path(), notebook_champion=True)
+        cookie = MagicMock(value="session-token")
+        jar = MagicMock()
+        jar.__len__.return_value = 1
+        jar.__iter__.return_value = iter([cookie])
+        responses = iter([
+            (200, {"user": {}}),
+            (200, {"profile": {"id": "user-id", "memberships": [{"organization": {"id": "organization-id"}}]}}),
+            (200, {"invoices": [{"invoiceId": "invoice-id"}]}),
+            (200, {"auditEvent": {"correlationId": "correlation-id", "policyProbabilitySource": "MODEL_API",
+                                  "modelId": "invoice-review", "modelVersion": "other", "modelRunId": "run-id"}}),
+        ])
+
+        with patch.object(smoke, "CookieJar", return_value=jar), \
+             patch.object(smoke, "HTTPCookieProcessor"), \
+             patch.object(smoke, "build_opener", return_value=MagicMock()), \
+             patch.object(smoke, "http_json", side_effect=lambda *args, **kwargs: next(responses)), \
+             patch.object(smoke, "bounded_json_child") as child:
+            with self.assertRaisesRegex(smoke.Failure, "prediction_champion_lineage_mismatch"):
+                harness.prediction_evidence(("run-id", "7"))
+
+        child.assert_not_called()
 
     def test_failed_fixture_retains_only_a_validated_diagnostic_stage(self):
         command = ["fixture-child"]
@@ -308,17 +506,104 @@ class StackIntegratedSmokeRuntimeTests(unittest.TestCase):
                 smoke.bounded_child_receipt(command, self.restricted_environment(), {}, lambda raw: {}, lambda raw: None)
 
     def test_failed_local_child_retains_only_a_validated_anchor_diagnostic(self):
-        command = ["anchor-child"]
+        command = [sys.executable, "-c", "import sys; sys.stderr.write('EVIDENCE_ANCHOR_DIAGNOSTIC phase=execute operation=anchor reason=configuration outcome=failed\\n'); raise SystemExit(1)"]
+        with self.assertRaisesRegex(smoke.Failure, "local_child_failed_at_execute_anchor_configuration"):
+            smoke.bounded_json_child(command, self.restricted_environment(), smoke.anchor_diagnostic)
 
-        def failed_child(*args, **kwargs):
-            kwargs["stderr"].write(
-                b"EVIDENCE_ANCHOR_DIAGNOSTIC phase=execute operation=anchor reason=configuration outcome=failed\n"
+    def test_timed_out_local_child_kills_and_reaps_its_process_group(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory) / "child.pid"
+            program = (
+                "import subprocess, sys, time; "
+                "child = subprocess.Popen([sys.executable, '-c', "
+                "\"import os, pathlib, time; pathlib.Path(os.environ['PID_PATH']).write_text(str(os.getpid())); time.sleep(60)\"]); "
+                "time.sleep(60)"
             )
-            return subprocess.CompletedProcess(command, 1)
+            real_popen = subprocess.Popen
 
-        with patch.object(smoke.subprocess, "run", side_effect=failed_child):
-            with self.assertRaisesRegex(smoke.Failure, "local_child_failed_at_execute_anchor_configuration"):
-                smoke.bounded_json_child(command, self.restricted_environment(), smoke.anchor_diagnostic)
+            def started_popen(*args, **kwargs):
+                process = real_popen(*args, **kwargs)
+                deadline = time.monotonic() + 2
+                while not pid_path.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(pid_path.exists(), "descendant did not write its PID before timeout activation")
+                return process
+
+            with patch.object(smoke.subprocess, "Popen", side_effect=started_popen):
+                with self.assertRaisesRegex(smoke.Failure, "local_child_unavailable_or_timed_out"):
+                    smoke.bounded_json_child([sys.executable, "-c", program],
+                                             {"PATH": os.environ.get("PATH", ""), "PID_PATH": str(pid_path)}, timeout=0.1)
+            self.assertTrue(pid_path.exists())
+            child_pid = int(pid_path.read_text(encoding="utf-8"))
+            with self.assertRaises(ProcessLookupError):
+                os.kill(child_pid, 0)
+
+    def test_timed_out_local_child_fails_closed_when_its_process_group_cannot_be_verified(self):
+        process = MagicMock(pid=4242)
+        process.wait.side_effect = [subprocess.TimeoutExpired(["child"], 0.1), None]
+
+        with patch.object(smoke.subprocess, "Popen", return_value=process), \
+             patch.object(smoke.os, "killpg", side_effect=[None, PermissionError]) as killpg:
+            with self.assertRaisesRegex(smoke.Failure, "local_child_cleanup_failed_closed"):
+                smoke.bounded_json_child(["child"], self.restricted_environment(), timeout=0.1)
+
+        self.assertEqual(process.wait.call_count, 2)
+        self.assertEqual(killpg.call_args_list, [call(4242, signal.SIGTERM), call(4242, 0)])
+
+    def test_process_group_with_only_zombies_is_clean(self):
+        with patch.object(smoke.os, "killpg"), \
+             patch.object(smoke, "process_group_member_states", return_value=("zombie", "zombie")):
+            self.assertTrue(smoke.process_group_is_clean(4242))
+
+    def test_running_process_group_member_fails_cleanup_at_deadline(self):
+        with patch.object(smoke.os, "killpg"), \
+             patch.object(smoke, "process_group_member_states", return_value=("running",)), \
+             patch.object(smoke.time, "monotonic", side_effect=[0, 5]):
+            with self.assertRaisesRegex(smoke.Failure, "local_child_cleanup_failed_closed"):
+                smoke.wait_for_process_group_removal(4242, timeout=1)
+
+    def test_process_group_permission_error_fails_closed(self):
+        with patch.object(smoke.os, "killpg", side_effect=PermissionError):
+            with self.assertRaisesRegex(smoke.Failure, "local_child_cleanup_failed_closed"):
+                smoke.process_group_is_clean(4242)
+
+    def test_timed_out_child_kills_a_term_ignoring_descendant_after_parent_exits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pid_path = Path(directory) / "child.pid"
+            ready_path = Path(directory) / "ready"
+            pgid_path = Path(directory) / "group.pid"
+            child_program = (
+                "import os, pathlib, signal, time\n"
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                "pathlib.Path(os.environ['PID_PATH']).write_text(str(os.getpid()))\n"
+                "pathlib.Path(os.environ['PGID_PATH']).write_text(str(os.getpgrp()))\n"
+                "pathlib.Path(os.environ['READY_PATH']).write_text('ready')\n"
+                "time.sleep(60)\n"
+            )
+            program = (
+                "import pathlib, signal, subprocess, sys, time\n"
+                f"subprocess.Popen([sys.executable, '-c', {child_program!r}])\n"
+                "while not pathlib.Path(__import__('os').environ['READY_PATH']).exists():\n"
+                "    time.sleep(0.01)\n"
+                "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+                "time.sleep(60)\n"
+            )
+            environment = {"PATH": os.environ.get("PATH", ""), "PID_PATH": str(pid_path),
+                           "READY_PATH": str(ready_path), "PGID_PATH": str(pgid_path)}
+            try:
+                with self.assertRaisesRegex(smoke.Failure, "local_child_unavailable_or_timed_out"):
+                    smoke.bounded_json_child([sys.executable, "-c", program], environment, timeout=0.5)
+                self.assertTrue(pid_path.exists())
+                self.assertTrue(pgid_path.exists())
+                process_group = int(pgid_path.read_text(encoding="utf-8"))
+                states = smoke.process_group_member_states(process_group)
+                self.assertTrue(all(state == "zombie" for state in states))
+            finally:
+                if pid_path.exists():
+                    try:
+                        os.kill(int(pid_path.read_text(encoding="utf-8")), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     def test_cleanup_discovers_only_label_verified_resources_after_an_early_failure(self):
         harness = smoke.Harness(self.project, self.ports, self.receipt_path())

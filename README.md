@@ -1,5 +1,13 @@
 # invoiceops-stack
 
+## Entrada de bootstrap local
+
+La guía vigente para un entorno limpio y desechable es
+[LOCAL_INFRASTRUCTURE_RUNBOOK.md](LOCAL_INFRASTRUCTURE_RUNBOOK.md). Este README
+conserva contratos y evidencia de los arneses propietarios; el runbook central
+define el orden entre repositorios, límites de secretos, validación integrada y
+continuidad. No declara preparación ni validación remota.
+
 ## STACK-08 — smoke integrado local y offline
 
 `scripts/stack_integrated_smoke.py` es un arnés **opt-in**: sólo actúa con
@@ -8,6 +16,22 @@ bajo ese proyecto, las capas locales de MLflow, Model API y App; después inicia
 siempre con `--no-build --pull never`, verifica salud, prepara el fixture de
 modelo, ejecuta una predicción y escribe un recibo sanitizado con permisos
 `0600`. No se ejecuta automáticamente como parte de la validación estática.
+
+### INT-06 — modo notebook → run → champion
+
+`--notebook-champion` es un opt-in adicional y no cambia el contrato histórico
+de `STACK-08`: sin esa bandera el arnés conserva el fixture existente. Con ella,
+el arnés ejecuta exclusivamente el notebook canónico HGB de `../invoiceops-ml`,
+obtiene el `run_id` desde una consulta estructurada de MLflow y llama al selector
+canónico `invoiceops-promote-local`. Sólo continúa si el selector confirma Gate
+PASS, `invoice-review-production@champion`, el mismo `run_id` y una versión no
+vacía. Antes de crear Evidence o iniciar Anvil, exige que health y predict de
+Model API, y el linaje de la decisión App, reporten exactamente ese `run_id` y
+versión. El subproceso de notebook se ejecuta en su propio grupo de procesos;
+ante timeout termina y recolecta ese grupo de forma acotada antes de fallar.
+Requiere el entorno local ya preparado en
+`../invoiceops-ml/.venv`; no instala dependencias ni interpreta stdout de un
+notebook.
 
 ### Cierre local completo: STACK-08 (2026-10-24)
 

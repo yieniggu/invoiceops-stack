@@ -12,13 +12,16 @@ not technically enforce a destination allowlist.
 
 import argparse
 from http.cookiejar import CookieJar
+import ctypes
 import importlib.util
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import secrets
 import shutil
+import signal
 import socket
 import subprocess
 import tempfile
@@ -30,6 +33,7 @@ from urllib.request import HTTPCookieProcessor, ProxyHandler, Request, build_ope
 
 ROOT = Path(__file__).resolve().parents[1]
 MLFLOW = ROOT.parent / "invoiceops-mlflow"
+NOTEBOOKS = ROOT.parent / "invoiceops-ml"
 MODEL_API = ROOT.parent / "invoiceops-model-api"
 APP = ROOT.parent / "invoiceops-app"
 CONTRACTS = ROOT.parent / "invoiceops-contracts"
@@ -54,6 +58,86 @@ ANVIL_DEVELOPMENT_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784
 DOCKER_EXECUTABLE_DIRECTORIES = ("/usr/local/bin", "/usr/bin", "/bin")
 FOUNDRY_EXECUTABLE_DIRECTORIES = (str(Path.home() / ".foundry" / "bin"),)
 RESTRICTED_PATH_DIRECTORIES = ("/usr/bin", "/bin", "/usr/sbin", "/sbin")
+NOTEBOOK_PYTHON = NOTEBOOKS / ".venv" / "bin" / "python"
+NOTEBOOK_HGB = NOTEBOOKS / "notebooks" / "05_hist_gradient_boosting.ipynb"
+CHAMPION_MODEL = "invoice-review-production"
+
+
+NOTEBOOK_RUN_RECEIPT = r'''import json
+import os
+import tempfile
+from pathlib import Path
+
+import mlflow
+import nbformat
+from nbclient import NotebookClient
+from invoiceops_ml.data import generate_synthetic_dataset
+from invoiceops_ml.ownership import OwnershipContext, owner_experiment_name
+
+
+root = Path(os.environ["STACK_NOTEBOOK_ROOT"])
+notebook = Path(os.environ["STACK_NOTEBOOK_HGB"])
+with tempfile.TemporaryDirectory() as workspace:
+    dataset = generate_synthetic_dataset(seed=202605, rows=12000, output_root=Path(workspace) / "data")
+    os.environ["INVOICEOPS_DATASET_DIR"] = str(dataset)
+    document = nbformat.read(notebook, as_version=4)
+    NotebookClient(document, timeout=150, kernel_name="python3").execute(cwd=root)
+
+context = OwnershipContext(
+    organization_slug=os.environ["INVOICEOPS_ORGANIZATION_SLUG"],
+    owner_type=os.environ["INVOICEOPS_OWNER_TYPE"],
+    owner_id=os.environ["INVOICEOPS_OWNER_ID"],
+    created_by_rut=os.environ["INVOICEOPS_CREATED_BY_RUT"],
+)
+client = mlflow.MlflowClient(tracking_uri=os.environ["MLFLOW_TRACKING_URI"])
+experiment = client.get_experiment_by_name(owner_experiment_name(context))
+if experiment is None:
+    raise RuntimeError("owner experiment missing")
+runs = client.search_runs(
+    [experiment.experiment_id],
+    filter_string="tags.`mlflow.runName` = 'hist-gradient-boosting'",
+    max_results=2,
+    order_by=["attributes.start_time DESC"],
+)
+if len(runs) != 1:
+    raise RuntimeError("expected exactly one notebook run")
+print(json.dumps({"run_id": runs[0].info.run_id}, sort_keys=True))
+'''
+
+NOTEBOOK_READER_RECEIPT = r'''import json
+import os
+
+import mlflow
+from mlflow import MlflowClient
+from mlflow.server import get_app_client
+
+
+mlflow.set_tracking_uri(os.environ["MLFLOW_TRACKING_URI"])
+client = MlflowClient()
+experiment = client.get_experiment_by_name(os.environ["STACK_NOTEBOOK_EXPERIMENT"])
+if experiment is None:
+    raise RuntimeError("notebook experiment missing")
+auth = get_app_client("basic-auth", tracking_uri=mlflow.get_tracking_uri())
+username = os.environ["STACK_MODEL_API_MLFLOW_USERNAME"]
+user = auth.create_user(username, os.environ["STACK_MODEL_API_MLFLOW_PASSWORD"])
+if user.is_admin:
+    raise RuntimeError("reader must not be admin")
+role = auth.create_role(workspace="default", name="stack08-notebook-reader")
+expected = {("experiment", experiment.experiment_id, "READ"),
+            ("registered_model", "invoice-review-production", "READ")}
+for resource_type, resource_pattern, permission in sorted(expected):
+    auth.add_role_permission(role.id, resource_type, resource_pattern, permission)
+auth.assign_role(user.username, role.id)
+if {(permission.resource_type, permission.resource_pattern, permission.permission)
+        for permission in auth.list_role_permissions(role.id)} != expected:
+    raise RuntimeError("reader permissions are not exact")
+if [assigned.id for assigned in auth.list_user_roles(user.username)] != [role.id]:
+    raise RuntimeError("reader role assignment is not exact")
+if auth.get_user(user.username).is_admin:
+    raise RuntimeError("reader must not be admin")
+print(json.dumps({"experiment": experiment.name, "reader_nonadmin": True,
+                  "exact_read_role": True}, sort_keys=True))
+'''
 
 
 class Failure(ValueError):
@@ -346,20 +430,142 @@ def anchor_diagnostic(raw):
     return "_".join(match.groups()) if match else None
 
 
-def bounded_json_child(command, environment, diagnostic=None, limit=4096):
+def darwin_process_group_member_states(process_group):
+    """Read only one Darwin process group's member states through libproc."""
+    try:
+        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    except OSError:
+        raise Failure("local_child_cleanup_failed_closed") from None
+    list_pids = library.proc_listpids
+    list_pids.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p, ctypes.c_int)
+    list_pids.restype = ctypes.c_int
+    pid_info = library.proc_pidinfo
+    pid_info.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
+    pid_info.restype = ctypes.c_int
+    buffer_size = 4096
+    buffer = (ctypes.c_int * (buffer_size // ctypes.sizeof(ctypes.c_int)))()
+    ctypes.set_errno(0)
+    count = list_pids(2, process_group, buffer, buffer_size)  # PROC_PGRP_ONLY
+    if count < 0 or count == buffer_size or (count == 0 and ctypes.get_errno() != 0):
+        raise Failure("local_child_cleanup_failed_closed")
+    states = []
+    for index in range(count // ctypes.sizeof(ctypes.c_int)):
+        info = ctypes.create_string_buffer(1024)
+        ctypes.set_errno(0)
+        size = pid_info(buffer[index], 3, 0, info, len(info))  # PROC_PIDTBSDINFO
+        if size == 0:
+            if ctypes.get_errno() in {3, 2}:  # ESRCH, ENOENT: member exited after listing.
+                continue
+            raise Failure("local_child_cleanup_failed_closed")
+        if size < 8:
+            raise Failure("local_child_cleanup_failed_closed")
+        status = ctypes.c_uint32.from_buffer(info, 4).value  # proc_bsdinfo.pbi_status
+        states.append("zombie" if status == 5 else "running")  # SZOMB
+    return tuple(states)
+
+
+def linux_process_group_member_states(process_group):
+    """Read bounded `/proc` state records and retain only the exact process group."""
+    states = []
+    try:
+        entries = list(os.scandir("/proc"))
+    except OSError:
+        raise Failure("local_child_cleanup_failed_closed") from None
+    if len(entries) > 65536:
+        raise Failure("local_child_cleanup_failed_closed")
+    for entry in entries:
+        if not entry.name.isdecimal():
+            continue
+        try:
+            stat = (Path("/proc") / entry.name / "stat").read_text(encoding="ascii")
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError):
+            raise Failure("local_child_cleanup_failed_closed") from None
+        try:
+            fields = stat.rsplit(")", 1)[1].split()
+            state, group = fields[0], int(fields[2])
+        except (IndexError, ValueError):
+            raise Failure("local_child_cleanup_failed_closed") from None
+        if group == process_group:
+            states.append("zombie" if state == "Z" else "running")
+    return tuple(states)
+
+
+def process_group_member_states(process_group):
+    """Classify only members of the process group's exact PGID; unknown platforms fail closed."""
+    if platform.system() == "Darwin":
+        return darwin_process_group_member_states(process_group)
+    if platform.system() == "Linux":
+        return linux_process_group_member_states(process_group)
+    raise Failure("local_child_cleanup_failed_closed")
+
+
+def process_group_is_clean(process_group):
+    """Accept an absent group or a group whose only remaining members are zombies."""
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        raise Failure("local_child_cleanup_failed_closed") from None
+    return all(state == "zombie" for state in process_group_member_states(process_group))
+
+
+def wait_for_process_group_removal(process_group, timeout):
+    deadline = time.monotonic() + timeout
+    while not process_group_is_clean(process_group):
+        if time.monotonic() >= deadline:
+            raise Failure("local_child_cleanup_failed_closed")
+        time.sleep(min(0.05, max(0, deadline - time.monotonic())))
+
+
+def terminate_child_process_group(process):
+    """Terminate, verify, and reap only the isolated process group for one child."""
+    process_group = process.pid
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        raise Failure("local_child_cleanup_failed_closed") from None
+    try:
+        process.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    if process_group_is_clean(process_group):
+        return
+    try:
+        os.killpg(process_group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        raise Failure("local_child_cleanup_failed_closed") from None
+    try:
+        process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        raise Failure("local_child_cleanup_failed_closed") from None
+    wait_for_process_group_removal(process_group, timeout=5)
+
+
+def bounded_json_child(command, environment, diagnostic=None, limit=4096, timeout=150):
     """Execute a local child and accept exactly one bounded JSON object."""
     with tempfile.NamedTemporaryFile(mode="w+b", delete=True) as output, \
          tempfile.NamedTemporaryFile(mode="w+b", delete=True) as error_output:
         try:
-            result = subprocess.run(command, cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
-                                    stdout=output, stderr=error_output, check=False, timeout=150)
-        except (OSError, subprocess.TimeoutExpired):
+            process = subprocess.Popen(command, cwd=ROOT, env=environment, stdin=subprocess.DEVNULL,
+                                       stdout=output, stderr=error_output, start_new_session=True)
+            result = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            terminate_child_process_group(process)
+            raise Failure("local_child_unavailable_or_timed_out") from None
+        except OSError:
             raise Failure("local_child_unavailable_or_timed_out") from None
         error_output.seek(0)
         error_raw = error_output.read(513)
         output.seek(0)
         raw = output.read(limit + 1)
-    if result.returncode != 0:
+    if result != 0:
         detail = (diagnostic(error_raw.decode("utf-8", errors="replace"))
                   if len(error_raw) <= 512 and diagnostic is not None else None)
         if isinstance(detail, str) and re.fullmatch(r"[a-z_]{1,72}", detail):
@@ -439,10 +645,12 @@ def write_receipt(path, receipt):
 
 
 class Harness:
-    def __init__(self, project, ports, receipt_path, allow_network_build=False):
+    def __init__(self, project, ports, receipt_path, allow_network_build=False, notebook_champion=False):
         self.project, self.ports, self.receipt_path = project, ports, receipt_path
-        self.allow_network_build = allow_network_build
+        self.allow_network_build, self.notebook_champion = allow_network_build, notebook_champion
         self.environment = generated_environment(*ports)
+        if self.notebook_champion:
+            self.environment["MODEL_API_ARTIFACT_DOWNLOAD_MODE"] = "proxy-http"
         self.started = False
         self.phases = []
         self.owned = {}
@@ -504,6 +712,67 @@ class Harness:
                 "model_fixture_failed")
         return module.Harness.predict_payload()
 
+    def notebook_run_champion(self):
+        """Run the canonical HGB notebook and promote only its structured MLflow run."""
+        require(NOTEBOOK_PYTHON.is_file() and os.access(NOTEBOOK_PYTHON, os.X_OK), "notebook_python_missing")
+        require(NOTEBOOK_HGB.is_file(), "notebook_hgb_missing")
+        notebook_environment = dict(self.environment)
+        notebook_environment.update(
+            MLFLOW_TRACKING_URI=f"http://127.0.0.1:{self.ports[0]}",
+            MLFLOW_REGISTRY_URI=f"http://127.0.0.1:{self.ports[0]}",
+            MLFLOW_TRACKING_USERNAME=self.environment["MLFLOW_AUTH_ADMIN_USERNAME"],
+            MLFLOW_TRACKING_PASSWORD=self.environment["MLFLOW_AUTH_ADMIN_PASSWORD"],
+            INVOICEOPS_ORGANIZATION_SLUG="app-07-local-demonstration",
+            INVOICEOPS_OWNER_TYPE="user",
+            INVOICEOPS_OWNER_ID="ef14197c-8f5b-4aef-8fa7-310e4da998b7",
+            INVOICEOPS_CREATED_BY_RUT="111111111",
+            STACK_NOTEBOOK_ROOT=str(NOTEBOOKS),
+            STACK_NOTEBOOK_HGB=str(NOTEBOOK_HGB),
+        )
+        notebook = bounded_json_child([str(NOTEBOOK_PYTHON), "-B", "-c", NOTEBOOK_RUN_RECEIPT],
+                                      notebook_environment, limit=512)
+        run_id = notebook.get("run_id")
+        require(isinstance(run_id, str) and run_id.strip(), "notebook_run_missing")
+        promotion = bounded_json_child(
+            [str(NOTEBOOK_PYTHON), "-B", "-m", "invoiceops_ml.local_promotion",
+             "--candidate-run-id", run_id],
+            notebook_environment,
+            limit=1024,
+        )
+        require(promotion.get("run_id") == run_id and promotion.get("model") == CHAMPION_MODEL
+                and promotion.get("alias") == "champion", "champion_promotion_invalid")
+        version = promotion.get("version")
+        require(isinstance(version, str) and version.strip(), "champion_promotion_invalid")
+        require(isinstance(promotion.get("gate_metrics"), dict), "notebook_gate_not_pass")
+        return {"run_id": run_id, "version": version, "gate": "PASS"}
+
+    def provision_notebook_reader(self):
+        """Create and validate the Model API reader for the notebook's exact experiment."""
+        experiment = "student/111111111/invoice-risk"
+        environment = dict(self.environment,
+                           MLFLOW_TRACKING_URI="http://127.0.0.1:5000",
+                           MLFLOW_TRACKING_USERNAME=self.environment["MLFLOW_AUTH_ADMIN_USERNAME"],
+                           MLFLOW_TRACKING_PASSWORD=self.environment["MLFLOW_AUTH_ADMIN_PASSWORD"],
+                           STACK_NOTEBOOK_EXPERIMENT=experiment)
+        keys = ("MLFLOW_TRACKING_URI", "MLFLOW_TRACKING_USERNAME", "MLFLOW_TRACKING_PASSWORD",
+                "STACK_MODEL_API_MLFLOW_USERNAME", "STACK_MODEL_API_MLFLOW_PASSWORD",
+                "STACK_NOTEBOOK_EXPERIMENT")
+        command = docker_command("exec", "-i", *sum((["-e", key] for key in keys), []),
+                                 f"{self.project}-mlflow-1", "python", "-B", "-c", NOTEBOOK_READER_RECEIPT)
+        receipt = bounded_json_child(command, environment, limit=512)
+        require(receipt == {"experiment": experiment, "reader_nonadmin": True, "exact_read_role": True},
+                "notebook_reader_invalid")
+        return receipt
+
+    @staticmethod
+    def validated_notebook_champion(candidate):
+        require(isinstance(candidate, dict), "notebook_champion_invalid")
+        run_id, version, gate = candidate.get("run_id"), candidate.get("version"), candidate.get("gate")
+        require(isinstance(run_id, str) and run_id.strip(), "notebook_run_missing")
+        require(gate == "PASS", "notebook_gate_not_pass")
+        require(isinstance(version, str) and version.strip(), "champion_promotion_invalid")
+        return run_id, version
+
     def deploy_contract(self):
         require(not CONTRACT_PROOF.exists(), "preexisting_contract_proof")
         rpc_url = f"http://127.0.0.1:{self.ports[4]}"
@@ -516,8 +785,8 @@ class Harness:
         suppressed(compose_command(self.project, "--profile", "stack03-bootstrap", "run", "--rm", "--no-deps",
                                   "app-bootstrap"), self.environment, timeout=180)
 
-    def prediction_evidence(self):
-        """Create one model-backed decision, then build its evidence batch through App ownership."""
+    def prediction_context(self, champion=None):
+        """Create and validate one model-backed decision before evidence is created."""
         origin = f"http://127.0.0.1:{self.ports[2]}"
         jar = CookieJar()
         opener = build_opener(ProxyHandler({}), HTTPCookieProcessor(jar))
@@ -542,11 +811,23 @@ class Harness:
         require(status == 200 and isinstance(event, dict) and isinstance(event.get("correlationId"), str),
                 "prediction_evidence_missing")
         model_api_lineage = (event.get("policyProbabilitySource") == "MODEL_API"
+                             and event.get("modelId") == "invoice-review"
                              and all(isinstance(event.get(key), str)
-                                     for key in ("modelId", "modelVersion", "modelRunId")))
+                                     for key in ("modelVersion", "modelRunId")))
+        if champion is not None:
+            run_id, version = champion
+            require(event.get("modelRunId") == run_id and event.get("modelVersion") == version,
+                    "prediction_champion_lineage_mismatch")
+        require(model_api_lineage, "prediction_model_lineage_missing")
         token = next(iter(jar)).value
         self.environment.update(APP_SESSION_TOKEN=token, STACK08_CORRELATION_ID=event["correlationId"],
                                  STACK08_ORGANIZATION_ID=self.context["organizationId"], STACK08_OWNER_ID=self.context["ownerId"])
+        return event
+
+    def prediction_evidence(self, champion=None, context_ready=False):
+        """Create one validated model-backed decision and its evidence batch through App ownership."""
+        if not context_ready:
+            self.prediction_context(champion)
         source = """const {createDatabase}=require('./dist/database.js'); const {createAuthService}=require('./dist/auth.js'); const {createEvidencePersistence}=require('./dist/evidence-persistence.js'); (async()=>{const d=createDatabase(process.env.DATABASE_URL);try{const a=await createAuthService(d.prisma,'open').getProfile(process.env.APP_SESSION_TOKEN);const r=await d.prisma.evidenceRecord.findFirst({where:{decisionEvent:{correlationId:process.env.STACK08_CORRELATION_ID}},select:{id:true}});if(!r)throw Error('record');const c={organizationId:process.env.STACK08_ORGANIZATION_ID,ownerType:'user',ownerId:process.env.STACK08_OWNER_ID};const b=await createEvidencePersistence(d.prisma).createBatch(a,c,[r.id]);console.log(JSON.stringify({batchId:b.id,rootHash:b.rootHash}));}finally{await d.prisma.$disconnect();}})().catch(()=>process.exitCode=1);"""
         command = docker_command("exec", "-i", "-e", "APP_SESSION_TOKEN", "-e", "STACK08_CORRELATION_ID",
                                  "-e", "STACK08_ORGANIZATION_ID", "-e", "STACK08_OWNER_ID",
@@ -554,7 +835,6 @@ class Harness:
         batch = bounded_json_child(command, self.environment)
         require(isinstance(batch.get("batchId"), str) and isinstance(batch.get("rootHash"), str)
                 and re.fullmatch(r"0x[0-9a-f]{64}", batch["rootHash"]), "evidence_batch_invalid")
-        require(model_api_lineage, "prediction_model_lineage_missing")
         return batch
 
     def anchor_and_reconcile(self, batch):
@@ -592,13 +872,23 @@ class Harness:
     def execute(self):
         self.phase("preflight"); self.preflight()
         self.phase("build"); self.started = True; self.build()
-        self.phase("anvil"); self.up(ANVIL_SERVICE, wait=60)
-        self.phase("contract"); self.deploy_contract()
-        self.phase("mlflow"); self.up(*BASE_SERVICES, wait=360)
-        payload = self.model_fixture()
+        if self.notebook_champion:
+            self.phase("mlflow"); self.up(*BASE_SERVICES, wait=360)
+            champion = self.validated_notebook_champion(self.notebook_run_champion())
+            self.phase("notebook_reader"); self.provision_notebook_reader()
+            payload = model_smoke_module().Harness.predict_payload()
+        else:
+            champion = None
+            self.phase("anvil"); self.up(ANVIL_SERVICE, wait=60)
+            self.phase("contract"); self.deploy_contract()
+            self.phase("mlflow"); self.up(*BASE_SERVICES, wait=360)
+            payload = self.model_fixture()
         self.phase("model_api"); self.up("model-api", wait=360)
-        status, _ = http_json(f"http://127.0.0.1:{self.ports[1]}/models/invoice-review/health")
+        status, health = http_json(f"http://127.0.0.1:{self.ports[1]}/models/invoice-review/health")
         require(status == 200, "model_api_readiness_failed")
+        if champion is not None:
+            require(health.get("run_id") == champion[0] and health.get("model_version") == champion[1],
+                    "model_api_health_champion_mismatch")
         self.phase("app_schema"); self.bootstrap_app()
         self.phase("app"); self.up(*APP_SERVICES, wait=120)
         status, _ = http_json(f"http://127.0.0.1:{self.ports[2]}/health/live")
@@ -606,8 +896,14 @@ class Harness:
         self.phase("prediction")
         status, prediction = http_json(f"http://127.0.0.1:{self.ports[1]}/models/invoice-review/predict", "POST", payload)
         require(status == 200 and isinstance(prediction.get("probability"), (int, float)), "prediction_failed")
+        if champion is not None:
+            require(prediction.get("run_id") == champion[0] and prediction.get("model_version") == champion[1],
+                    "model_api_prediction_champion_mismatch")
+            self.prediction_context(champion)
+            self.phase("anvil"); self.up(ANVIL_SERVICE, wait=60)
+            self.phase("contract"); self.deploy_contract()
         self.phase("evidence")
-        batch = self.prediction_evidence()
+        batch = self.prediction_evidence(context_ready=champion is not None)
         self.phase("anchor_reconcile")
         self.anchor_and_reconcile(batch)
         self.collect_owned()
@@ -643,6 +939,8 @@ def main(argv=None):
     parser.add_argument("--execute", action="store_true", help="authorize this local-only Docker operation")
     parser.add_argument("--allow-network-build", action="store_true",
                         help="allow this local build to fetch missing build inputs; no destination allowlist is enforced")
+    parser.add_argument("--notebook-champion", action="store_true",
+                        help="opt in to the canonical notebook-to-champion flow instead of the STACK-08 fixture")
     parser.add_argument("--project", required=True, help="new isolated stack08-proof-* project")
     parser.add_argument("--mlflow-port", type=int, default=18580)
     parser.add_argument("--api-port", type=int, default=18581)
@@ -658,7 +956,8 @@ def main(argv=None):
     ports = (args.mlflow_port, args.api_port, args.backend_port, args.frontend_port, args.anvil_port)
     require(all(isinstance(port, int) and 1024 <= port <= 65535 for port in ports) and len(set(ports)) == len(ports),
             "invalid_ports")
-    return 0 if Harness(args.project, ports, args.receipt, args.allow_network_build).finish() == "PASS" else 1
+    return 0 if Harness(args.project, ports, args.receipt, args.allow_network_build,
+                        args.notebook_champion).finish() == "PASS" else 1
 
 
 if __name__ == "__main__":
