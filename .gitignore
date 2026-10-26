@@ -3,3 +3,4 @@
 !.env.example
 .codegraph/
 .DS_Store
+evidence/**/*.json
