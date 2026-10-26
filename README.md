@@ -2,228 +2,20 @@
 
 ## Entrada de bootstrap local
 
-La guía vigente para un entorno limpio y desechable es
-[LOCAL_INFRASTRUCTURE_RUNBOOK.md](LOCAL_INFRASTRUCTURE_RUNBOOK.md). Este README
-conserva contratos y evidencia de los arneses propietarios; el runbook central
-define el orden entre repositorios, límites de secretos, validación integrada y
-continuidad. No declara preparación ni validación remota.
+La guía vigente para levantar InvoiceOps durante la recuperación P0 es
+[RECOVERY_RUNBOOK.md](RECOVERY_RUNBOOK.md): runbook progresivo por etapas que se
+actualiza con cada slice de `invoiceops-app`. Usa el mismo entorno que
+[`LOCAL_RUN.md`](../invoiceops-app/LOCAL_RUN.md): un único proyecto Compose
+(`invoiceops-dev`), el `.env` de la app y la base `invoiceops`;
+`invoiceops_recovery_test` es solo para `test:recovery:postgres`.
 
-## STACK-08 — smoke integrado local y offline
+El runbook integrado anterior, la capa `compose.invoiceops-app.yml` y los arneses
+STACK-03 (`stack_invoiceops_app_smoke.py`) y STACK-08/INT-06
+(`stack_integrated_smoke.py`) se retiraron: dependían de Model API,
+`local-demonstration`, evidencia y anclaje, que ya no existen en la App. Su
+historia queda en git. Las secciones siguientes documentan las capas que siguen
+vigentes (MLflow, Model API y Anvil), independientes de la App.
 
-`scripts/stack_integrated_smoke.py` es un arnés **opt-in**: sólo actúa con
-`--execute` y un proyecto nuevo `stack08-proof-*`. Construye explícitamente,
-bajo ese proyecto, las capas locales de MLflow, Model API y App; después inicia
-siempre con `--no-build --pull never`, verifica salud, prepara el fixture de
-modelo, ejecuta una predicción y escribe un recibo sanitizado con permisos
-`0600`. No se ejecuta automáticamente como parte de la validación estática.
-
-### INT-06 — modo notebook → run → champion
-
-`--notebook-champion` es un opt-in adicional y no cambia el contrato histórico
-de `STACK-08`: sin esa bandera el arnés conserva el fixture existente. Con ella,
-el arnés ejecuta exclusivamente el notebook canónico HGB de `../invoiceops-ml`,
-obtiene el `run_id` desde una consulta estructurada de MLflow y llama al selector
-canónico `invoiceops-promote-local`. Sólo continúa si el selector confirma Gate
-PASS, `invoice-review-production@champion`, el mismo `run_id` y una versión no
-vacía. Antes de crear Evidence o iniciar Anvil, exige que health y predict de
-Model API, y el linaje de la decisión App, reporten exactamente ese `run_id` y
-versión. El subproceso de notebook se ejecuta en su propio grupo de procesos;
-ante timeout termina y recolecta ese grupo de forma acotada antes de fallar.
-Requiere el entorno local ya preparado en
-`../invoiceops-ml/.venv`; no instala dependencias ni interpreta stdout de un
-notebook.
-
-### Cierre local completo: STACK-08 (2026-10-24)
-
-El subflujo de fixture MLflow queda **RESOLVED_LOCAL_VALIDATED**. El arnés
-reenvía las credenciales de lector existentes sólo al bootstrap que crea el
-usuario y su rol de lectura; para el único fixture que escribe experimento, run,
-artefactos, versión y alias, reenvía temporalmente las credenciales de
-administración sólo al contenedor efímero. Los valores nunca aparecen como
-argumentos, recibos ni salida retenida.
-
-La investigación aislada confirmó que el backend de App expone liveness JSON en
-`/health/live`; la ruta anterior `/health` no satisfacía ese contrato. El arnés
-verifica ahora esa ruta, crea una decisión respaldada por Model API, construye su
-lote de evidencia, despliega el contrato en Anvil local y ejecuta
-`anchor → reconcile`.
-
-La ejecución fresca `stack08-proof-finalpass1024` aprobó todas las fases:
-`preflight`, `build`, `anvil`, `contract`, `mlflow`, `model_api`, `app_schema`,
-`app`, `prediction`, `evidence` y `anchor_reconcile`. El recibo
-[`evidence/stack08-proof-finalpass1024.json`](evidence/stack08-proof-finalpass1024.json)
-es `PASS`, no retiene salidas ni secretos, y la reinspección posterior confirmó la
-ausencia de contenedores, red, volúmenes e imágenes derivadas del proyecto exacto.
-
-**STACK-08 queda CLOSED / COMPLETED_LOCAL_VALIDATED**. Stack pasa a
-**6/9 (66.7%)**. La evidencia acredita únicamente este entorno local aislado: no
-certifica CI, publicación, despliegue, Anchor remoto ni una cadena pública.
-
-El entorno hijo mantiene un `PATH` restringido y sin variables del operador.
-Para localizar el CLI, el arnés acepta únicamente un ejecutable `docker`
-ejecutable en directorios conocidos, incluido `/usr/local/bin`; no hereda el
-`PATH` ambiental. Si no puede localizarlo, falla con `docker_cli_not_found`.
-
-Antes de construir, el arnés inspecciona las bases declaradas en los Dockerfile.
-Sin `--allow-network-build`, si falta una imagen base o una capa de dependencias
-en la caché local termina con `offline_build_cache_miss`: el preflight offline
-permanece *fail-closed*.
-
-Para el build local autorizado que necesita recuperar esas entradas, use
-`--execute --allow-network-build`. Este segundo flag es un opt-in explícito y
-estrecho: permite continuar únicamente con ese build local. Bajo la autorización
-operativa correspondiente, las dependencias previstas pueden contactar de forma
-anónima Docker Hub, GHCR, PyPI y registry.npmjs.org. El arnés no implementa una
-allowlist técnica de destinos; su aislamiento se limita a no iniciar login,
-credenciales, push, despliegue remoto ni Anchor remoto, y a no leer `.env`. Anvil,
-Foundry y Anchor se ejecutan exclusivamente dentro del proyecto local aislado. Tras el
-build, el runtime conserva el proyecto `stack08-proof-*` aislado, inicia con
-`--no-build --pull never` y el cleanup mantiene su comportamiento *fail-closed*.
-
-No existe pipeline, deploy ni registry de imágenes de InvoiceOps en este
-repositorio. Las etiquetas derivadas por Compose, por ejemplo
-`stack08-proof-example-mlflow:latest`, son artefactos locales y efímeros del
-proyecto de prueba; no son imágenes publicadas. Para reanudar, use otro proyecto
-`stack08-proof-*` y otro recibo nuevo después de restaurar las bases/capas en
-caché. El cleanup falla cerrado: elimina sólo identidades con la etiqueta Compose
-del proyecto exacto y las etiquetas derivadas exactas tras comprobar por image ID
-que ningún contenedor las referencia; no usa `down`, `prune` ni recursos
-`invoiceops-local-*`.
-
-**Último estado (2026-10-20): CR-013 RESOLVED_LOCAL_VERIFIED**, tras revisión
-independiente. Todos los checks de cierre reciben contexto de cleanup; la prueba
-reserva 120 s y el cierre se limita al deadline absoluto de 1800 s. Regresiones con
-reloj virtual a 1679/1680/1690 s, post-`down` a 1795 s y sin comandos a 1800 s;
-identidad e incertidumbre intactas. No se ejecutó un runtime real de 1800 s.
-Stack completo **124/124 PASS**, sin skips, 16.893 s unittest/17.179 s proceso:
-adaptador en memoria, 37 consultas reales Compose config y una versión exacta,
-configuración anónima sin motor/servicios; no es un nuevo ops08 full-stack.
-
-MLFLOW-07 conserva **COMPLETED_LOCAL_VALIDATED**, MLflow **7/9 (77.8%)**; Stack
-**3/9 (33.3%)** sin tickets adicionales. [Ledger final de los ocho hallazgos,
-gates y continuidad](../dev/tickets/Implementado.md#cierre-final-de-remediación-local--cr-013-a-cr-019-y-cr-030-2026-10-20).
-CR-030 separa preparación explícita de imágenes y arranque sólo caché; nueva
-prueba local `147273ec3819672ab9fd67b6` y preparación fallida
-`642a7929350b5bbeb94e3ce2` auditadas sin recursos propios restantes. Ese fallo
-conserva causa UNKNOWN y `cleaned_unverified`, no PASS. Los ocho hallazgos están
-RESOLVED_LOCAL_VERIFIED, CR-017 en alcance de mitigación sin causa histórica probada.
-Las revisiones y conteos inferiores son históricos; CR-013 no sigue pendiente.
-Si se requiere, siguiente paso: delta `ff-change-review` del lote completo;
-preparar commit sólo a petición del usuario, sin staging ni commit automático.
-Producto requiere decisión por APP-11/CR-004 → APP-12 → APP-13 → STACK-03,
-Remix y remoto diferidos. No se inicia trabajo ni operación nueva.
-
-**Estado vigente:** STACK-02 permanece **COMPLETED localmente — VALIDATED**. STACK-03
-está **CLOSED / COMPLETED_LOCAL_VALIDATED** por el recibo sanitizado y rastreado
-[`evidence/stack03/STACK-03-CR-035-PASS.json`](evidence/stack03/STACK-03-CR-035-PASS.json),
-SHA-256 `0bb4db101a92b968c904b4d2bc36cd06c981653e6e967dc629501518b54ac608`:
-el proyecto nuevo `stack03-proof-cr035aa` aprobó todas las fases y cuatro aserciones
-de flujo; su cierre retiró exactamente 8 contenedores, 1 red, 3 volúmenes y 5
-imágenes propios. Esquema `STACK03-receipt-v3` enlaza revisión/hash deterministas
-del arnés/Compose y de los contextos consumidos de App, Model API y MLflow. Stack queda
-en **4/9 (44.4%)**. STACK-01 mantiene
-**USER_REPORTED** y API-06 **ACCEPTED_RISK**.
-
-## STACK-03 — runbook local de operador
-
-### Ruta rápida
-
-1. Confirme los prerrequisitos y entregue las variables al proceso mediante un gestor
-   seguro; no use `.env*`, argumentos con secretos ni `env` para inspeccionarlas.
-2. Cargue las cinco capas exactamente en el orden indicado y use un proyecto y puertos
-   loopback nuevos.
-3. Para la verificación completa autorizada, ejecute el arnés una vez con un recibo
-   nuevo en `evidence/stack03/`; lea el estado y `cleanup` del JSON, no stdout/stderr.
-
-### Prerrequisitos y orden de composición
-
-Se requieren los repositorios hermanos `invoiceops-mlflow`, `invoiceops-model-api`
-e `invoiceops-app`, Docker/Compose local funcional y Python 3. El orden es estricto:
-
-1. `../invoiceops-mlflow/compose.yml` — base MLflow;
-2. `./compose.yml` — overlay Stack;
-3. `./compose.model-api.yml` — overlay Model API;
-4. `../invoiceops-app/docker-compose.yml` — servicios App;
-5. `./compose.invoiceops-app.yml` — cuarta capa propiedad de STACK-03.
-
-Use siempre `--project-directory ../invoiceops-mlflow` y `--env-file /dev/null`.
-Las publicaciones de App y Model API son exclusivamente loopback; PostgreSQL y MinIO
-no se publican. La App espera la salud de Model API y recibe solo la URL e ID de
-modelo, nunca credenciales o topología de MLflow.
-
-### Propiedad de variables
-
-| Clase | Propietario | Variables | Regla |
-| --- | --- | --- | --- |
-| Infraestructura/MLflow | operador y capas 1–2 | `STACK_POSTGRES_PASSWORD`, `STACK_MINIO_ROOT_USER`, `STACK_MINIO_ROOT_PASSWORD`, `MLFLOW_AUTH_ADMIN_USERNAME`, `MLFLOW_AUTH_ADMIN_PASSWORD`, `MLFLOW_FLASK_SERVER_SECRET_KEY` | Secretos del proceso; no se guardan ni imprimen. |
-| Model API | operador y capa 3 | `STACK_MODEL_API_MLFLOW_USERNAME`, `STACK_MODEL_API_MLFLOW_PASSWORD`, `MODEL_API_ADMIN_TOKEN`, `STACK_MLFLOW_PORT`, `STACK_MODEL_API_PORT` | Credenciales y puertos de la frontera Model API; no se transfieren a App. |
-| App | capa 4 | `STACK_APP_POSTGRES_PASSWORD`, `STACK_APP_BACKEND_PORT`, `STACK_APP_FRONTEND_PORT`, `STACK_APP_TEST_DB_PORT`, `MODEL_API_URL`, `MODEL_API_MODEL_ID` | Solo `MODEL_API_URL` e `MODEL_API_MODEL_ID` son configuración de inferencia App; ambas fallan cerradas si faltan/vacías. |
-| Arnés | `scripts/stack_invoiceops_app_smoke.py` | proyecto, puertos y secretos efímeros propios | Genera valores en memoria y no acepta identidad reutilizada. |
-
-### Validación aislada
-
-La validación estática no inicia servicios:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest \
-  tests/test_stack_invoiceops_app_config.py tests/test_stack_invoiceops_app_smoke.py -v
-```
-
-Una ejecución completa requiere autorización operacional independiente, un proyecto
-`stack03-proof-...`, puertos libres distintos y un nombre de recibo que no exista:
-
-```bash
-PYTHONDONTWRITEBYTECODE=1 python3 -B scripts/stack_invoiceops_app_smoke.py --execute \
-  --project stack03-proof-example01 --backend-port 18640 --frontend-port 18641 \
-  --report "$PWD/evidence/stack03/STACK-03-example01.json"
-```
-
-El arnés deriva los puertos internos MLflow/Model API desde el puerto backend, usa
-solo el socket Unix local y configuración Docker temporal anónima. Un recibo válido
-es JSON `STACK03-receipt-v3`, con timestamp UTC, revisión/hash de entradas no
-secretos y hash/revisión por cada contexto construido (App, Model API y MLflow),
-además del arnés/Compose, estados de fases/aserciones, límites de salida y resultado
-de limpieza.
-No contiene tokens, cookies, variables, cuerpos, logs, rutas absolutas ni IDs de
-recursos. Un `FAIL` conserva únicamente ese recibo seguro y **no cierra** STACK-03.
-
-### Aserciones e interpretación
-
-Un `PASS` exige: preflight y build, arranque de base/MLflow/Model API, fixture y
-health de modelo, migración/fixture de DB de App, login, listado de facturas,
-metadata de decisión y fallback al detener Model API. Además debe indicar
-`cleanup.status: PASS_ALL_OWNED_RESOURCES_REMOVED`. Cualquier fase o aserción no
-`PASS`, o cualquier cleanup distinto, es evidencia incompleta y requiere revisión;
-no se debe inferir éxito desde healthchecks aislados.
-
-### Propiedad, cleanup y rollback
-
-Antes de iniciar, el arnés rechaza recursos etiquetados con el mismo proyecto. Tras
-registrar el recibo, elimina solo contenedores, red, volúmenes e imágenes cuyo nombre
-o etiqueta Compose coincide con el proyecto exacto; vuelve a verificar la ausencia.
-No usa `prune`, `reset`, `down`, `down -v` ni eliminación amplia, y no toca recursos
-ajenos. Los reportes temporales no se retienen: el único artefacto durable es el
-recibo sanitizado rastreable en `evidence/stack03/`.
-
-Para rollback de código, retire únicamente `compose.invoiceops-app.yml`, el arnés,
-sus pruebas, recibos y esta sección mediante una revisión posterior. No restaure el
-README completo ni borre recursos Docker manualmente salvo las identidades exactas
-verificadas de una ejecución autorizada. No existe rollback de los datos sintéticos
-ya eliminados.
-
-### Límites y procedencia histórica
-
-No hay despliegue, publicación de imágenes, operación remota, cambio de contrato,
-migración productiva ni certificación de CI/remoto. La evidencia acredita solo el
-host y los bytes locales descritos por el hash del recibo.
-
-Los recibos `STACK-03-20261023T000000Z.json` y `STACK-03-CR-031.json` conservan
-la procedencia histórica previa. El primero es un intento **FAIL**:
-la enumeración de imágenes usó IDs abreviados y el cleanup automático quedó
-`UNKNOWN_REQUIRES_REVIEW`; sus recursos exactos se retiraron posteriormente tras
-verificar su etiqueta. No se borra esa procedencia ni se reclasifica como PASS. El
-recibo CR-031 posterior con estado `PASS` lo sustituyó temporalmente. El recibo
-versionado CR-035 `PASS` con procedencia completa es la **evidencia vigente**.
 
 **Delta de revisión (2026-10-19): READY_WITH_FOLLOW_UP.** CR012 **RESOLVED_LOCAL**;
 CR013 **corrección local autorizada, pendiente de revisión independiente (MEDIUM)**,
@@ -623,7 +415,6 @@ Spotchecks finales del responsable: **20 pruebas smoke PASS en 0.196 s** y **11 
 
 Tras validar identidades se retiraron **cinco contenedores y una red propios**; se preservaron **dos volúmenes nombrados y dos imágenes construidas**. No se tocaron proyectos ajenos según las operaciones reportadas; no se afirma igualdad global de inventarios ni que los volúmenes sintéticos sean una instalación reutilizable. Su eliminación futura requiere autorización propia.
 
-Stack **3/9 (33.3%)**, sin completar STACK-08 ni INT-06. Siguiente recomendación: **planificar y definir validación local de MLFLOW-07**, cuyas dependencias MLFLOW-04 y APP-04 están completadas, sin iniciar provisioning compartido/remoto. STACK-03 espera APP-13, que depende de APP-12 y su cierre pendiente de APP-11; STACK-04 espera además APP-11. El [flujo vigente](../dev/tickets/08_flujo_ideal_de_tickets.md#continuidad-vigente--prueba-estándar-stack-02-2026-10-19) mantiene los bloqueos y el diferimiento remoto. API-06 conserva ACCEPTED_RISK y STACK-01 USER_REPORTED. Esta conciliación no autoriza servicios, pruebas operativas, publicación, staging, commit ni push.
 
 ### Cierre vigente STACK-02 — prueba estándar ops08
 
@@ -685,7 +476,6 @@ operacional ni verificación independiente. No cambian tickets, conteos ni ops08
 
 **Historial y límites:** permanecen intactos los FAIL de 2026-10-17 ops01/02 y de 2026-10-19 ops01/02/03/04/05/07, además de diag06 y las recuperaciones. ops08 prueba este flujo completo actual, no una raíz histórica corregida, fiabilidad universal en frío, SLO productivo, sandbox/RSS ni atestación de argv de procesos cortos. `backend_cancellation=NOT_PROVEN` conserva su significado general; no invalida las fases completadas. No cambia autenticación, pins, confianza, transporte S3 normal ni defaults globales.
 
-**Continuidad:** App **12/15 (80%)**; ML **14/16 (87.5%)**; MLflow **6/9 (66.7%)**; Model API **7/9 (77.8%)**; Contracts **3/7 (42.9%)**; Stack **3/9 (33.3%)**; integración **2/7 (28.6%)**. Sólo planificar MLFLOW-07; no se completa App, Anvil, STACK-08 ni INT-06 ni se autoriza otro ticket, provisioning o acceso remoto. [Seguimiento vigente](../dev/tickets/Implementado.md#cierre-vigente-stack-02--prueba-estándar-completa-2026-10-19).
 
 ## STACK-04 AC-05 — operación futura de Anvil y despliegue local
 
