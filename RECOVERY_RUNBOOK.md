@@ -149,14 +149,14 @@ curl -fsS "http://127.0.0.1:${LOCAL_BACKEND_PORT}/health/ready"
 
 URL: `http://127.0.0.1:5174` (o `LOCAL_FRONTEND_PORT`).
 
-| #   | Acción                                                                  | Resultado observable                                                   | No acredita                        |
-| --- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------- |
-| C1  | Login con el RUT y la contraseña temporal de E0.4                       | Aparece «Cambia tu contraseña temporal»; tras cambiarla se abre la app | Pruebas de onboarding (E3)         |
-| C2  | **Mi perfil**                                                           | Insignia de administrador de plataforma; aparece **Administración**    | Acceso a facturas                  |
-| C3  | En **Administración**, crear una organización y aprovisionar un usuario | Ambos aparecen tras refrescar                                          | Flujo P0 de organizaciones (E4)    |
-| C4  | Crear un grupo y agregar integrantes                                    | El grupo aparece en **Mis grupos**                                     | Los cuatro permisos por grupo (E4) |
-| C5  | Abrir **Facturas**                                                      | Bandeja vacía, sin errores                                             | Alta de facturas (E5)              |
-| C6  | Navegación                                                              | No existen **Recursos**, **Evidencia y lotes** ni **Evaluación ML**    | —                                  |
+| #   | Acción                                                                                                                                      | Resultado observable                                                     | No acredita                        |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------- |
+| C1  | Login con el RUT y la contraseña temporal de E0.4                                                                                           | Aparece «Cambia tu contraseña temporal»; tras cambiarla se abre la app   | Pruebas de onboarding (E3)         |
+| C2  | **Mi perfil**                                                                                                                               | Insignia de administrador de plataforma; **Organizaciones** ofrece «Crear organización»      | Acceso a facturas                  |
+| C3  | En `/organizaciones/nueva`, crear una organización con el RUT de su primer ADMIN; como ese ADMIN, en `/organizaciones/:id`, aprovisionar un usuario | Ambos aparecen tras refrescar; la contraseña temporal se ve una sola vez | Flujo P0 de organizaciones (E4)    |
+| C4  | En **Grupos** (`/grupos`), crear un grupo (`/organizaciones/:id/grupos/nuevo`) y, en su detalle, marcar permisos y miembros                                                                | El grupo y sus permisos persisten al recargar                            | Los cuatro permisos por grupo (E4) |
+| C5  | Abrir **Facturas**                                                                                                                          | Bandeja vacía, sin errores                                               | Alta de facturas (E5)              |
+| C6  | Navegación                                                                                                                                  | No existen **Recursos**, **Evidencia y lotes** ni **Evaluación ML**      | —                                  |
 
 ### E0.7 Gates de la app
 
