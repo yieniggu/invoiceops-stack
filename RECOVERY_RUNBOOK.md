@@ -23,27 +23,27 @@ recursos remotos.
 
 ## Estado de etapas
 
-| Etapa | Slice / ticket | Qué agrega al recorrido | Estado |
-| --- | --- | --- | --- |
-| E0 | S0 | App independiente: PostgreSQL + backend + frontend, login, administración, grupos, políticas, lectura de facturas | **Vigente** |
-| E1 | RP0-01 | Base consolidada `invoiceops` y `pnpm recovery:local:reset` con guardas; rol normal `USER` | **Vigente** |
-| E2 | RP0-02 | `/openapi.json` y rutas `/api/v1` | Pendiente |
-| E3 | RP0-03, RP0-04 | `pnpm recovery:bootstrap` reemplaza el alta manual; cambio obligatorio de contraseña | Pendiente |
-| E4 | RP0-05 a RP0-08 | Onboarding React, organizaciones, grupos con cuatro permisos, usuarios y membresías | Pendiente |
-| E5 | RP0-09 a RP0-15 | Alta idempotente, filtros, eliminación lógica y bandeja React de facturas | Pendiente |
-| E6 | RP0-16, RP0-17 | Tokens operacionales emitidos y revocados desde React | Pendiente |
-| E7 | RP0-18, RP0-19 | Swagger `/docs` con Bearer y clientes curl/Python | Pendiente |
-| E8 | RP0-20 | `pnpm test:recovery:e2e` sobre el recorrido completo G01–G15 | Pendiente |
+| Etapa | Slice / ticket  | Qué agrega al recorrido                                                                                           | Estado      |
+| ----- | --------------- | ----------------------------------------------------------------------------------------------------------------- | ----------- |
+| E0    | S0              | App independiente: PostgreSQL + backend + frontend, login, administración, grupos, políticas, lectura de facturas | **Vigente** |
+| E1    | RP0-01          | Base consolidada `invoiceops` y `pnpm recovery:local:reset` con guardas; rol normal `USER`                        | **Vigente** |
+| E2    | RP0-02          | `/openapi.json` y rutas `/api/v1`                                                                                 | Pendiente   |
+| E3    | RP0-03, RP0-04  | `pnpm recovery:bootstrap` reemplaza el alta manual; cambio obligatorio de contraseña                              | Pendiente   |
+| E4    | RP0-05 a RP0-08 | Onboarding React, organizaciones, grupos con cuatro permisos, usuarios y membresías                               | Pendiente   |
+| E5    | RP0-09 a RP0-15 | Alta idempotente, filtros, eliminación lógica y bandeja React de facturas                                         | Pendiente   |
+| E6    | RP0-16, RP0-17  | Tokens operacionales emitidos y revocados desde React                                                             | Pendiente   |
+| E7    | RP0-18, RP0-19  | Swagger `/docs` con Bearer y clientes curl/Python                                                                 | Pendiente   |
+| E8    | RP0-20          | `pnpm test:recovery:e2e` sobre el recorrido completo G01–G15                                                      | Pendiente   |
 
 MLflow, Model API, blockchain y el smoke integrado `stack08` quedan fuera de este
 runbook. Si se reincorporan, será como etapas nuevas después de E8.
 
 ## Propiedad
 
-| Recurso | Dueño | Notas |
-| --- | --- | --- |
-| Orden de etapas y checkpoints | `invoiceops-stack` | Este archivo |
-| PostgreSQL, esquema, backend, frontend, `.env`, Compose | `invoiceops-app` | Proyecto Compose `invoiceops-dev`; `docker-compose.yml` + `compose.invoiceops-local.yml`; configuración privada en el `.env` de la raíz de la app |
+| Recurso                                                 | Dueño              | Notas                                                                                                                                             |
+| ------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Orden de etapas y checkpoints                           | `invoiceops-stack` | Este archivo                                                                                                                                      |
+| PostgreSQL, esquema, backend, frontend, `.env`, Compose | `invoiceops-app`   | Proyecto Compose `invoiceops-dev`; `docker-compose.yml` + `compose.invoiceops-local.yml`; configuración privada en el `.env` de la raíz de la app |
 
 Puertos (loopback): PostgreSQL `LOCAL_APP_DB_PORT` (del `.env`), Docker 5300
 (backend) y 5174 (frontend), desarrollo con pnpm 4380 y 5380. El runbook no toca
@@ -107,35 +107,32 @@ applied`. Las guardas del reset están en el paso 3 de
 deploy` sobre la base de E0. El rol normal de organización es `USER` (ya no
 existe `STUDENT`).
 
-### E0.4 Primer usuario y administrador de plataforma (provisional hasta E3)
+### E0.4 Primer usuario y administrador de plataforma
 
-```zsh
-read -rs "NEW_PASSWORD?Contraseña del primer usuario: "; echo
-export NEW_PASSWORD
-USER_ID=$(pnpm -C "$APP" --filter @invoiceops/backend exec tsx -e '
-(async () => {
-  const { createDatabase } = await import("./src/database.ts");
-  const { provisionInternalUser } = await import("./src/internal-user-provisioning.ts");
-  const db = createDatabase(process.env.DATABASE_URL);
-  try {
-    const user = await provisionInternalUser(db.prisma, {
-      name: "Administrador local",
-      rut: "11111111-1",
-      password: process.env.NEW_PASSWORD,
-    });
-    console.log(user.id);
-  } finally {
-    await db.prisma.$disconnect();
-  }
-})();' | tail -n 1)
-unset NEW_PASSWORD
-echo "userId: $USER_ID"
-if [ -n "$USER_ID" ]; then pnpm -C "$APP" --filter @invoiceops/backend platform-administrator bootstrap "$USER_ID" --confirm-bootstrap; else echo "Detente: no se obtuvo USER_ID" >&2; fi
+```sh
+pnpm -C "$APP" recovery:bootstrap
 ```
 
-Sintaxis zsh. En bash, usa `read -rsp "Contraseña del primer usuario: " NEW_PASSWORD; echo`.
-**Detente si** `USER_ID` queda vacío: el alta falló y no debes ejecutar el
-bootstrap. Ejecútalo una sola vez por base.
+Con `DATABASE_URL` cargada (E0.2) y la base recién reseteada (E0.3). El comando es
+interactivo: pide nombre, RUT (válido, por ejemplo `11111111-1`) y la contraseña
+temporal dos veces, con entrada oculta; nunca la acepta por argumentos ni por
+variables de entorno y exige una terminal (sin TTY aborta). En una sola
+transacción crea el usuario con contraseña temporal de 24 horas y cambio
+obligatorio, y la designación única de administrador de plataforma. Solo corre
+contra una `DATABASE_URL` local.
+
+- Repetirlo con el mismo RUT responde «already initialized» (la salida del comando está en inglés) y no cambia nada; con
+  otro RUT se rechaza (no transfiere autoridad). Es seguro reejecutarlo.
+- `pnpm -C "$APP" recovery:bootstrap --existing-user` designa a un usuario
+  existente por RUT, solo si tiene una credencial utilizable (una contraseña
+  temporal vencida no cuenta); no pide contraseña.
+- Si cierras la entrada (Ctrl-D) o interrumpes (Ctrl-C), termina con código 1 sin
+  cambiar nada.
+
+**Detente si** el comando termina con error: no continúes a E0.5 sin
+administrador designado. La contraseña temporal vence en 24 horas; si vence, repite
+E0.3 y este paso. Detalle en el paso 4 de
+[`LOCAL_RUN.md`](../invoiceops-app/LOCAL_RUN.md).
 
 ### E0.5 Backend y frontend
 
@@ -152,14 +149,14 @@ curl -fsS "http://127.0.0.1:${LOCAL_BACKEND_PORT}/health/ready"
 
 URL: `http://127.0.0.1:5174` (o `LOCAL_FRONTEND_PORT`).
 
-| # | Acción | Resultado observable | No acredita |
-| --- | --- | --- | --- |
-| C1 | Login con `11111111-1` y la contraseña de E0.4 | Se abre la app | Onboarding obligatorio (E3) |
-| C2 | **Mi perfil** | Insignia de administrador de plataforma; aparece **Administración** | Acceso a facturas |
-| C3 | En **Administración**, crear una organización y aprovisionar un usuario | Ambos aparecen tras refrescar | Flujo P0 de organizaciones (E4) |
-| C4 | Crear un grupo y agregar integrantes | El grupo aparece en **Mis grupos** | Los cuatro permisos por grupo (E4) |
-| C5 | Abrir **Facturas** | Bandeja vacía, sin errores | Alta de facturas (E5) |
-| C6 | Navegación | No existen **Recursos**, **Evidencia y lotes** ni **Evaluación ML** | — |
+| #   | Acción                                                                  | Resultado observable                                                   | No acredita                        |
+| --- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------- | ---------------------------------- |
+| C1  | Login con el RUT y la contraseña temporal de E0.4                       | Aparece «Cambia tu contraseña temporal»; tras cambiarla se abre la app | Pruebas de onboarding (E3)         |
+| C2  | **Mi perfil**                                                           | Insignia de administrador de plataforma; aparece **Administración**    | Acceso a facturas                  |
+| C3  | En **Administración**, crear una organización y aprovisionar un usuario | Ambos aparecen tras refrescar                                          | Flujo P0 de organizaciones (E4)    |
+| C4  | Crear un grupo y agregar integrantes                                    | El grupo aparece en **Mis grupos**                                     | Los cuatro permisos por grupo (E4) |
+| C5  | Abrir **Facturas**                                                      | Bandeja vacía, sin errores                                             | Alta de facturas (E5)              |
+| C6  | Navegación                                                              | No existen **Recursos**, **Evidencia y lotes** ni **Evaluación ML**    | —                                  |
 
 ### E0.7 Gates de la app
 
@@ -191,10 +188,17 @@ Para volver al empaquetado: detén `pnpm dev` (Ctrl+C) y repite E0.5.
 > **Formato del RUT.** La API usa `19034790-7`; la UI lo muestra y acepta como
 > `19.034.790-7`. El cuerpo no puede empezar con 0: `01234567-4` se rechaza.
 >
-> **Límite de login.** `POST /auth/login` admite 5 intentos por IP cada 15
-> minutos. Las banderas `AUTH_RATE_LIMIT_*` aplican al proceso del backend
-> (`pnpm dev`); el overlay de Docker no las reenvía y solo el valor `true`
-> desactiva el límite. Detalle en
+> **Límite de login.** `POST /api/v1/auth/login` limita solo los intentos
+> **fallidos**: por IP, 5 cada 15 minutos (ventana fija) y por RUT, 5 y luego un
+> bloqueo progresivo (1 minuto, 2, 4… hasta 15) que un login correcto reinicia.
+> Con `pnpm dev` las banderas `AUTH_RATE_LIMIT_DISABLED`,
+> `AUTH_RATE_LIMIT_MAX_ATTEMPTS` y `AUTH_RATE_LIMIT_WINDOW_MS` aplican al proceso
+> del backend: `AUTH_RATE_LIMIT_DISABLED` acepta `true`, `false` o vacío y
+> cualquier otro valor detiene el arranque. Docker no reenvía esas banderas; el
+> `docker-compose.yml` base solo fija `AUTH_TRUST_PROXY_HOPS=1` (nginx es el único
+> proxy) para que la clave de IP sea el cliente real y no el proxy. El backend
+> sigue publicado en loopback para `/health/*`: un proceso local puede falsificar
+> `X-Forwarded-For` llamándolo directo (riesgo residual aceptado en desarrollo). Detalle en
 > [`LOCAL_RUN.md`](../invoiceops-app/LOCAL_RUN.md#límite-de-intentos-de-login-desarrollo).
 
 ### E1 — Base consolidada (RP0-01)
@@ -217,8 +221,8 @@ las rutas funcionales pasan a `/api/v1` y nginx/Vite las reenvían.
 
 ### E3 — Bootstrap y onboarding (RP0-03, RP0-04)
 
-Esperado: `pnpm recovery:bootstrap` reemplaza E0.4; el primer login exige cambiar
-a otra contraseña antes de cualquier otra acción.
+Esperado: `pnpm recovery:bootstrap` (E0.4) crea al administrador con contraseña
+temporal; el primer login exige cambiarla por otra antes de cualquier otra acción.
 
 ### E4 — Administración P0 (RP0-05 a RP0-08)
 
@@ -259,10 +263,10 @@ Compose ni la red `invoiceops-local-link`.
 
 ## Problemas frecuentes
 
-| Síntoma | Causa probable | Solución |
-| --- | --- | --- |
-| `port is already allocated` | Laboratorio anterior u otro servicio en el puerto | Detenlo o cambia `LOCAL_*_PORT` en el `.env` de `invoiceops-app` |
-| `DATABASE_URL must be configured` | Shell sin E0.2 cargado | Repite la carga de variables |
-| `/health/ready` falla | Migraciones sin aplicar | Repite E0.3 |
-| Mutaciones devuelven 403 | Acceso directo al backend sin `Origin` del frontend | Usa la URL del frontend |
-| Login devuelve 429 `Demasiados intentos` | Superaste el límite de intentos por IP (5 cada 15 min) | Espera 15 minutos, reinicia el backend, o en desarrollo usa `AUTH_RATE_LIMIT_DISABLED=true pnpm dev` (ver [`LOCAL_RUN.md`](../invoiceops-app/LOCAL_RUN.md#límite-de-intentos-de-login-desarrollo)) |
+| Síntoma                                     | Causa probable                                                                                             | Solución                                                                                                                                                                                                              |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `port is already allocated`                 | Laboratorio anterior u otro servicio en el puerto                                                          | Detenlo o cambia `LOCAL_*_PORT` en el `.env` de `invoiceops-app`                                                                                                                                                      |
+| `DATABASE_URL must be configured`           | Shell sin E0.2 cargado                                                                                     | Repite la carga de variables                                                                                                                                                                                          |
+| `/health/ready` falla                       | Migraciones sin aplicar                                                                                    | Repite E0.3                                                                                                                                                                                                           |
+| Mutaciones devuelven 403 `FORBIDDEN_ORIGIN` | Acceso directo al backend sin `Origin` del frontend                                                        | Usa la URL del frontend                                                                                                                                                                                               |
+| Login devuelve 429 `RATE_LIMITED`           | Superaste el límite de intentos fallidos por IP (5 cada 15 min) o por RUT (bloqueo progresivo desde 1 min) | Espera el bloqueo (hasta 15 minutos), reinicia el backend, o en desarrollo usa `AUTH_RATE_LIMIT_DISABLED=true pnpm dev` (ver [`LOCAL_RUN.md`](../invoiceops-app/LOCAL_RUN.md#límite-de-intentos-de-login-desarrollo)) |
