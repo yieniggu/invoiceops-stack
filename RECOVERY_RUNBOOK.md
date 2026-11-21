@@ -92,9 +92,11 @@ Repite este bloque y el de E0.1 en cada shell nueva.
 pnpm -C "$APP" install
 pnpm -C "$APP" generate
 dev_compose up -d --wait db
-printf '%s\n' "${DATABASE_URL#*@}"   # esperado: 127.0.0.1:<LOCAL_APP_DB_PORT>/invoiceops?schema=public
+printf '%s\n' "${DATABASE_URL#*@}"
 pnpm -C "$APP" recovery:local:reset -- --confirm-reset=invoiceops
 ```
+
+El `printf` debe mostrar `127.0.0.1:<LOCAL_APP_DB_PORT>/invoiceops?schema=public`; si muestra otro host o base, deténgase antes del reset.
 
 > Borra todos los datos de `invoiceops`; no lo ejecutes si quieres conservarlos.
 > Precondición: `DATABASE_URL` debe apuntar a `127.0.0.1:$LOCAL_APP_DB_PORT/invoiceops`.
@@ -250,15 +252,19 @@ Esperado: `pnpm test:recovery:e2e` cubre G01–G15 con todo lo externo apagado.
 
 ## Parar y reiniciar
 
-```sh
-# Detener conservando datos
-dev_compose down
+Detener conservando los datos:
 
-# Borrar los datos del proyecto invoiceops-dev (incluye la base invoiceops)
+```sh
+dev_compose down
+```
+
+**Advertencia:** el bloque siguiente borra los datos del proyecto `invoiceops-dev` (incluye la base `invoiceops`). No lo ejecutes si quieres conservarlos.
+
+```sh
 dev_compose down -v
 ```
 
-Advertencia: `down -v` borra todos los datos de `invoiceops`; no lo ejecutes si quieres conservarlos. Tras `down -v`, repite E0.3 y E0.4. No borres volúmenes de otros proyectos
+Tras `down -v`, repite E0.3 y E0.4. No borres volúmenes de otros proyectos
 Compose ni la red `invoiceops-local-link`.
 
 ## Problemas frecuentes

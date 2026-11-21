@@ -1,0 +1,83 @@
+name: CI
+
+# The stack tests read the sibling repositories (compose files included by compose.yml, the env
+# examples scanned for leaked secrets), so CI checks them out NEXT TO this repository, with the same
+# folder names as a developer machine. A missing sibling makes the tests FAIL here (CI is set), it
+# never skips them.
+#
+# invoiceops-model-api is private: create the repository secret SIBLINGS_READ_TOKEN (a fine-grained
+# token with read-only "Contents" access to the five sibling repositories).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stack:
+    name: Compose config and stack tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: invoiceops-stack
+          persist-credentials: false
+      - name: Check out invoiceops-app
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yieniggu/invoiceopps-app
+          path: invoiceops-app
+          token: ${{ secrets.SIBLINGS_READ_TOKEN }}
+          persist-credentials: false
+      - name: Check out invoiceops-mlflow
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yieniggu/invoiceops-mlflow
+          path: invoiceops-mlflow
+          token: ${{ secrets.SIBLINGS_READ_TOKEN }}
+          persist-credentials: false
+      - name: Check out invoiceops-model-api (private)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yieniggu/invoiceops-model-api
+          path: invoiceops-model-api
+          token: ${{ secrets.SIBLINGS_READ_TOKEN }}
+          persist-credentials: false
+      - name: Check out invoiceops-ml
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yieniggu/invoiceops-ml
+          path: invoiceops-ml
+          token: ${{ secrets.SIBLINGS_READ_TOKEN }}
+          persist-credentials: false
+      - name: Check out invoiceops-contracts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: yieniggu/invoiceops-contracts
+          path: invoiceops-contracts
+          token: ${{ secrets.SIBLINGS_READ_TOKEN }}
+          persist-credentials: false
+      - name: Docker Compose version (include needs v2.24 or newer)
+        run: docker compose version
+      - name: Validate the local stack configuration
+        working-directory: invoiceops-stack
+        run: docker compose -f compose.yml -f compose.local.yml --env-file local.example.env config -q
+      - name: Lint the tests and scripts
+        working-directory: invoiceops-stack
+        run: |
+          python3 -m pip install ruff==0.17.6
+          ruff check tests scripts
+      - name: Run the stack tests
+        working-directory: invoiceops-stack
+        run: python3 -m unittest discover -s tests

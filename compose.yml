@@ -1,27 +1,30 @@
-name: invoiceops-stack
+# invoiceops-stack: the ONE compose project of the whole platform (app, MLflow + gateway, Model API).
+# Every repository keeps owning its services; this file only `include`s them.
+#
+# Server (checkouts side by side in /opt/invoiceops/{app,mlflow,model-api,ml,stack}):
+#
+#   cd /opt/invoiceops/stack
+#   docker compose --env-file /opt/invoiceops/invoiceops.env up -d
+#
+# Local: compose.local.yml + local.example.env (see README, "Levantar todo").
+#
+# The project name MUST stay `invoiceops`: it is the name of the already running app project, so
+# compose adopts its containers and keeps using its volume (invoiceops_postgres_data) and its
+# networks (invoiceops_api, invoiceops_db, aglai_edge). Do not rename it.
+name: invoiceops
 
-# Overlay only: load invoiceops-mlflow/compose.yml first.
-services:
-  postgres:
-    environment:
-      POSTGRES_PASSWORD: ${STACK_POSTGRES_PASSWORD:?Set STACK_POSTGRES_PASSWORD in the operator environment}
-
-  minio:
-    environment:
-      MINIO_ROOT_USER: ${STACK_MINIO_ROOT_USER:?Set STACK_MINIO_ROOT_USER in the operator environment}
-      MINIO_ROOT_PASSWORD: ${STACK_MINIO_ROOT_PASSWORD:?Set STACK_MINIO_ROOT_PASSWORD in the operator environment}
-
-  minio-init:
-    environment:
-      MINIO_ROOT_USER: ${STACK_MINIO_ROOT_USER:?Set STACK_MINIO_ROOT_USER in the operator environment}
-      MINIO_ROOT_PASSWORD: ${STACK_MINIO_ROOT_PASSWORD:?Set STACK_MINIO_ROOT_PASSWORD in the operator environment}
-
-  mlflow:
-    environment:
-      MLFLOW_SERVER_ALLOWED_HOSTS: "mlflow:5000,127.0.0.1:5000,127.0.0.1:${STACK_MLFLOW_PORT:-5000}"
-      AWS_ACCESS_KEY_ID: ${STACK_MINIO_ROOT_USER:?Set STACK_MINIO_ROOT_USER in the operator environment}
-      AWS_SECRET_ACCESS_KEY: ${STACK_MINIO_ROOT_PASSWORD:?Set STACK_MINIO_ROOT_PASSWORD in the operator environment}
-      MLFLOW_AUTH_DATABASE_URI: postgresql+psycopg2://mlflow:${STACK_POSTGRES_PASSWORD:?Set STACK_POSTGRES_PASSWORD in the operator environment}@postgres:5432/mlflow
-      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://mlflow:${STACK_POSTGRES_PASSWORD:?Set STACK_POSTGRES_PASSWORD in the operator environment}@postgres:5432/mlflow
-    ports: !override
-      - "127.0.0.1:${STACK_MLFLOW_PORT:-5000}:5000"
+# Paths are relative to this directory. The defaults are the server layout; locally the sibling
+# folders are called invoiceops-* and local.example.env points the variables at them.
+#
+# `env_file: /dev/null` on every entry: by default compose also reads the `.env` that sits next to
+# each included file, which would let a stray file inside a sibling repository inject or shadow
+# secrets. Variables must come ONLY from --env-file (and the process environment).
+include:
+  - path: ${INVOICEOPS_APP_DIR:-../app}/compose.production.yml
+    env_file: /dev/null
+  - path:
+      - ${INVOICEOPS_MLFLOW_DIR:-../mlflow}/compose.yml
+      - ${INVOICEOPS_MLFLOW_DIR:-../mlflow}/compose.gateway.yml
+    env_file: /dev/null
+  - path: ${INVOICEOPS_MODEL_API_DIR:-../model-api}/compose.production.yml
+    env_file: /dev/null

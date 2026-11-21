@@ -1,0 +1,69 @@
+# Local override of compose.yml, for a developer machine (the Mac used in class):
+#
+#   docker compose -p invoiceops-local -f compose.yml -f compose.local.yml --env-file local.example.env up -d
+#
+# Always pass `-p invoiceops-local`: an exported COMPOSE_PROJECT_NAME beats the `name:` below.
+#
+# It changes ONLY what a laptop needs; every service, secret name and internal URL stays the same
+# as in production:
+#   - plain http (GATEWAY_ALLOW_INSECURE_HTTP=1 on the gateway, NODE_ENV=development on the app) on
+#     distinct *.localhost hosts, so cookies never mix;
+#   - published ports on loopback only (the web and the gateway: nothing else is published);
+#   - no Cloudflare tunnel: the edge network is created here instead of being external;
+#   - its own project, volumes and networks (default `invoiceops-local`), so it can never touch the
+#     production names pinned by the app (invoiceops_postgres_data, invoiceops_api, ...).
+# Effects of the two backend variables set below (they exist ONLY in this file):
+#   - NODE_ENV=development: the session cookie loses the Secure flag (a browser would not send it
+#     over http) and the backend accepts an http:// MLFLOW_PUBLIC_URL. NODE_ENV=production (the
+#     server) makes the cookie Secure and requires https://.
+#   - AUTH_RATE_LIMIT_DISABLED=true: turns off the login attempt limits (5 failures per IP every
+#     15 minutes, progressive lock per RUT) so the guided flow can be repeated; the backend logs a
+#     warning at startup and REFUSES to start with it when NODE_ENV=production.
+# Browsers resolve *.localhost to loopback, no /etc/hosts entry is needed.
+name: ${LOCAL_PROJECT:-invoiceops-local}
+
+services:
+  backend:
+    platform: ${LOCAL_PLATFORM:-linux/arm64}
+    environment:
+      # Cookie without Secure, http MLflow origin accepted (see the header).
+      NODE_ENV: development
+      # Login attempt limits off (see the header); never allowed with NODE_ENV=production.
+      AUTH_RATE_LIMIT_DISABLED: "true"
+
+  web:
+    platform: ${LOCAL_PLATFORM:-linux/arm64}
+    ports:
+      - "127.0.0.1:${LOCAL_APP_PORT:-8100}:80"
+
+  migrate:
+    platform: ${LOCAL_PLATFORM:-linux/arm64}
+
+  bootstrap:
+    platform: ${LOCAL_PLATFORM:-linux/arm64}
+
+  mlflow:
+    healthcheck:
+      # The first start runs the database migrations; a laptop under load needs more room.
+      start_period: 120s
+
+  gateway:
+    environment:
+      # Opt-in of the gateway for http origins (local development and tests only).
+      GATEWAY_ALLOW_INSECURE_HTTP: "1"
+    ports:
+      - "127.0.0.1:${LOCAL_MLFLOW_PORT:-8101}:8080"
+
+networks:
+  api: !override
+    name: ${LOCAL_PROJECT:-invoiceops-local}_api
+  db: !override
+    name: ${LOCAL_PROJECT:-invoiceops-local}_db
+    internal: true
+  # Production attaches to the external aglai_edge (cloudflared lives there); locally nothing does.
+  edge: !override
+    name: ${LOCAL_PROJECT:-invoiceops-local}_edge
+
+volumes:
+  postgres_data: !override
+    name: ${LOCAL_PROJECT:-invoiceops-local}_postgres_data
